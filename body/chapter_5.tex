@@ -1,0 +1,245 @@
+% !Mode:: "TeX:UTF-8" 
+
+\BiChapter{形式化验证系统的实现}{}
+
+本章将介绍基于 Java 和 Z3 的 SMT 编码器以及分层抽象算法的具体实现。首先介绍系统的整体设计和各个关键组件之间的交互逻辑。然后分别介绍各个组件的实现方式，包括反序列化器，编码器，策略类，关系图谱和发现类的具体实现，最后给出了对真实策略文件的验证方式。
+
+\BiSection{总体实现}{}
+
+形式化验证系统主要又如下几个关键组件构成：
+
+\begin{itemize}
+    \item 反序列化器：将提供的 JSON 文件解析为可供编码器进行编码等策略类，包括处理单值、空值、改写通配符 (wildcard) 为标准正则表达式语法等。
+    \item 策略类：IAM 策略的存储形式，实现了包括偏序性在内的诸多前文提到等性质。
+    \item 编码器：提供 SMT 编码和求解等能力，可以将策略类和发现类编码成相应的 SMT 表达式，并基于这些表达式进行若干运算。
+    \item 关系图谱：从策略类构建，描述了策略类中所有谓词的偏序关系，用于执行分层抽象算法。
+    \item 发现类：描述分层抽象算法产生的结果，具有与策略类相似等性质。
+\end{itemize}
+
+系统运行时各个组件之间的交互如下：
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{overview.pdf}
+\caption{系统组件交互示意图} \label{overview}
+\end{figure}
+
+具体而言，系统的运行流程如下：
+
+\begin{enumerate}
+    \item 系统用户在搭建好的验证平台上，上传需要验证的 IAM 策略文件，然后调用形式化验证器进行检验。
+    \item 系统收到用户传入的 IAM 策略文件，使用反序列化器将其转化为策略类以供其他组件使用。
+    \item 系统首先调用 SMT 编码器检查 IAM 策略文件是否有允许域，如果没有则直接返回。如果有则开始分层抽象算法流程。
+    \item 分层算法流程开始，系统首先识别出策略类中所有的谓词关系。
+    \item 识别出谓词关系后，系统调用 SMT 求解器两两计算偏序关系，并将计算结果加入关系图谱中。
+    \item 由关系图谱计算出每个谓词的直接前驱，并加入到关系图谱中。
+    \item 依关系图谱，调用 SMT 编码器运行算法\ref{access_summary}，得到该策略的发现集。
+\end{enumerate}
+
+\BiSection{反序列化器}{}
+
+Java 中有许多常用的 JSON 处理库：
+
+\begin{enumerate}
+    \item Jackson。Jackson 是一个功能强大、特性丰富且高度流行等 Java 数据处理工具套件，不仅局限于 JSON。其核心模块包括 jackson-core, jackson-annotations 和 jackson-databind。这种模块化的设计允许开发者按需引入，减少不必要的依赖。Jackson 的主要优势在于其高性能、广泛的定制能力、全面的功能集以及庞大的社区支持。
+    \item Gson。Gson 是 Google 开发的一个 Java 库，旨在提供易用且性能良好的 Java 泛型支持。Gson 的主要优势在其简洁的 API 和对泛型的强大处理能力。
+    \item JSON.simple。JSOM.simple 是一个设计简洁的 Java 工具包，用于 JSON 文本的编解码。它以轻量级、类数量少和通常没有外部依赖而著称。
+\end{enumerate}
+
+从解析速度和内存占用两个方面考虑，Jackson 在处理大型文件时性能最佳，JSON.simple 次之，Gson 最为吃力；在内存占用方面，Jackson 具备最好的内存效率，因为它可以使用流式 API，增量地处理 JSON 文件而无需全部加载到内存中，Gson 虽然也提供了流式 API，但其对反射的依赖会带来一定程度的内存开销，JSON.simple 则直接将整个 JSON 文件加载到内存中，非常不适合处理大型文件。经过比较，最终决定选用 Jackson 作为 JSON 处理库。
+
+反序列化器的主要功能包括：单值、空值处理，改写通配符 (wildcard) 为标准正则表达式语法。
+
+\textbf{单值、空值处理}。用户在配置文件中可能会存在缺省项，反序列化器需要识别这一点，并补上一个空集作为策略类中等对应值；而对于单值，则需要将其转化为一个只有一个元素等集合。
+
+\textbf{改写通配符}。AWS IAM 策略文件语法中仅支持 *、? 两种通配符 (wildcard)，而与标准等正则表达式语法不同，因此需要反序列化器实时改写。一般地，* 代表匹配任意数量的任意字符，所以需要等价改写为正则表达式语法中的 .*，? 代表匹配任意字符一次，所以需要等价改写为正则表达式语法中的 .。在改写完成后，可能需要对改写的表达式进行进一步化简。考察两种通配符相连的情况，对 *?，改写结果是 .*.，可以简化为 .+，即匹配任意字符一次或多次，对 ?* 对简化同理。以下是一个改写示例：
+\begin{equation*}
+\text{str} = \text{a*b*c*d*?e?*f*} \to \text{r} = \text{a.*b.*c.*d.+e.+f.*}
+\end{equation*}
+
+\BiSection{策略类}{}
+
+依照 AWS IAM 策略文件的语法，策略类应该包含版本和陈述两个字段，而陈述又应该包含主体、行为、资源、条件四个字段，因而策略类是一个嵌套类。由面向对象编程思想，策略类应该有一个自编码的方法 $.encode()$，可以调用 SMT 编码器将自身编码为 SMT 表达式。而考虑到策略类是嵌套的，所以其嵌套类应该都有对应的方法，上级类只要调用下级类的自编码方法进行处理即可。于是可以给出以下各个类的定义：
+
+\begin{lstlisting}[language=Java, caption={策略类定义}, label={java_policy}]
+public class Policy {
+    String version;
+    List<Statement> statements;
+}
+
+public class Statement {
+    Map<VarKey, Set<String>> principals;
+    Set<String> actions;
+    Set<String> resources;
+    Set<Condition> conditions;
+}
+
+public class Condition {
+    VarOperator operator;
+    VarKey key;
+    Set<String> values;
+}
+\end{lstlisting}
+
+其中，VarKey 是用于限定键的种类的枚举类型，VarOperator 是用于限定运算符种类的枚举类型。对条件 (Condition)，由公式\ref{condition_encoding}给出其自编码方法，对陈述 (Statement)，由公式\ref{statement_encoding}给出其自编码方法，对策略 (Policy)，由公式\ref{general_encoding}给出其自编码方法。
+
+\BiSection{编码器}{}
+
+\BiSubsection{Z3 自动机}{}
+
+Z3 使用上下文 (Context) 来管理所有 SMT 表达式和变量相关等操作，因此可以继承上下文类来创建一个 Z3 自动机类，以添加对正则表达式等支持。总体而言， Z3 自动机需要添加两个功能：从字符串正则表达式构建 SMT 语言的正则表达式，添加正则表达式等匹配操作。具体而言：
+
+\begin{lstlisting}[language=Java, caption={Z3 自动机}, label={z3automata}]
+public class Z3Automata extends Context {
+    public Z3Automata() {
+        super();
+    }
+    public BoolExpr mkReMatch(Expr<SeqSort<CharSort>> target, String regex) {
+        // 正则表达式匹配操作
+        return mkInRe(target, mkRegex(regex)); // mkInRe 是内置函数
+    }
+    public ReExpr<SeqSort<CharSort>> mkRegex(String regex);
+}
+\end{lstlisting}
+
+其中，mkRegex 函数的实现按照算法\ref{build_regex_algo}。
+
+\BiSubsection{上下文管理}{}
+
+受限于 Z3 特性，系统的整个运行流程都必须在同一个 Z3 上下文中运行。考虑到这个特性，可以使用 Java 单例来管理 Z3 上下文：
+
+\begin{lstlisting}[language=Java, caption={Z3 单例管理器}, label={automan}]
+public final class AutoMan {
+    private static final Z3Automata automata = new Z3Automata();
+    private AutoMan() {} // 私有构造函数防止外部实例化
+    public static Z3Automata get() {
+        return AutoMan.automata;
+    }
+}
+\end{lstlisting}
+
+\BiSubsection{功能特性}{}
+
+编码器需要实现的功能有：
+
+\begin{itemize}
+    \item 基本逻辑运算，包括与或非
+    \item 偏序性 ($\preceq$) 检查
+    \item 严格偏序性 ($\prec$) 检查
+    \item 可满足性检查
+\end{itemize}
+
+基本的逻辑运算 Z3 已经内置了支持。对于偏序性和严格偏序性，按公式\ref{partial_predicate}，有：
+\begin{equation}
+\begin{aligned}
+\phi_1 \preceq \phi_2 \iff \gamma(\phi_1) &\subseteq \gamma(\phi_2) \\
+                      \iff \gamma(\phi_1) &\cap \overline{\gamma(\phi_2)} = \emptyset \\
+\phi_1 \prec \phi_2   \iff \gamma(\phi_1) &\subset \gamma(\phi_2) \\
+                      \iff \gamma(\phi_1) &\cap \overline{\gamma(\phi_2)} = \emptyset \\
+                      \land \gamma(\phi_2) &\cap \overline{\gamma(\phi_1)} \not= \emptyset
+\end{aligned}
+\end{equation}
+
+而可满足性检查只需调用 Z3 求解器对表达式进行求解即可。于是有：
+
+\begin{lstlisting}[language=Java, caption={SMT 编码器}, label={encoded_api}]
+public interface EncodedAPI {
+    public static BoolExpr and(BoolExpr... exprs) {
+        return AutoMan.get().mkAnd(exprs);
+    }
+    public static BoolExpr or(BoolExpr... exprs) {
+        return AutoMan.get().mkOr(exprs);
+    }
+    public static BoolExpr not(BoolExpr expr) {
+        return AutoMan.get().mkNot(expr);
+    }
+    public static Boolean greaterEquals(BoolExpr lhs, BoolExpr rhs) {
+        return !check(not(lhs), rhs);
+    }
+    public static Boolean greaterThan(BoolExpr lhs, BoolExpr rhs) {
+        return check(and(lhs, not(rhs))) && !check(and(not(lhs), rhs));
+    }
+    public static Boolean check(BoolExpr... exprs) {
+        Solver solver = AutoMan.get().mkSolver();
+        solver.add(exprs);
+        return solver.check() == Status.SATISFIABLE;
+    }
+}
+\end{lstlisting}
+
+值得注意的是，此处我们采用接口类加静态方法的格式，是为了保证兼容性和可移植性。这样如果以后想要添加具体的类实现对原有代码等改动会比较小。
+
+\BiSection{关系图谱}{}
+
+关系图谱被用来识别并整理一个策略中所有谓词的偏序关系。对于每一个键 $k$ 的每一个谓词 $\phi_{ki}$，系统首先在 SMT 编码器的帮助下识别出其所有的前驱，并构建一个前驱映射表 $R = \{(\phi_k, \Phi) | \forall \phi' \in \Phi, \phi' \prec \phi_k\}$。接着基于前驱映射表 $R$，按照公式\ref{idom}的描述构建直接前驱映射表 $I = \{(\phi_k, \text{idom}(\phi_k)\}$。具体实现较为复杂，此处仅给出算法描述：
+
+\begin{algorithm}[H]
+    \caption{KvRelation \label{kv_relation}}
+    \IncMargin{2em}
+    \DontPrintSemicolon
+    \KwIn{Policy $p$}
+    \KwOut{Idom map $m$}
+
+    relations $\gets \emptyset$ \tcp*{初始化前驱映射表}
+    idoms $\gets \emptyset$ \tcp*{初始化直接前驱映射表}
+    \For{$k \in K$}{
+        \For{$\phi_i, \phi_j \in \Phi_k \times \Phi_k$}{
+            \If{$\phi_j \prec \phi_i$}{
+                relations($k$).add($\phi_i$, $\phi_j$) \tcp*{将一个偏序对加入前驱映射表中}
+            }
+        }
+    }
+
+    \For{$k \in K$}{
+        \For{$\phi \in \text{relations}(k)$}{
+            \For{$\phi' \in \text{relations}(k)(\phi)$}{
+                \If{$\not\exists \phi'' \in \text{relations}(k)(\phi), \phi' \prec \phi'' \prec \phi$}{
+                    idom($k$).add($\phi$, $\phi'$) \tcp*{将一个满足要求的偏序对加入直接前驱映射表中}
+                }
+            }
+        }
+    }
+
+    \Return idoms
+\end{algorithm}
+
+算法\ref{kv_relation}执行完成后，只需调用 $\text{idoms}(k)(\phi)$ 即可获得键 $k$ 下谓词 $\phi$ 的所有直接前驱谓词。
+
+\BiSection{发现类}{}
+
+根据定义\ref{def_finding}，发现是一些肯定性的语句的集合。所以一个发现类可以被定义为一个键值对映射。相应地，发现类也具有与策略类类似的自编码方法 $.encode()$。除此之外，发现类还应具有 $.reduce()$ 和 $.refine()$ 两个方法，分别对应算法\ref{reduce_finding} 和算法 \ref{refine_finding}。
+
+\begin{lstlisting}
+public class SmtFinding {
+    Map<VarKey, Set<String>> finding;
+}
+\end{lstlisting}
+
+\BiSection{代码统计}{}
+
+经统计，截至 commit hash 71bc89431da128e3cab464f70ed3e1d77ef32fad, 本系统的代码量统计如下表：
+
+\begin{table}[H]
+	\renewcommand{\arraystretch}{1.2}
+	\centering\wuhao
+	\caption{代码统计表} \label{tab_ch2} \vspace{2mm}
+	\begin{tabularx}{\textwidth} { 
+   >{\centering\arraybackslash}X 
+   >{\centering\arraybackslash}X 
+   >{\centering\arraybackslash}X 
+   >{\centering\arraybackslash}X
+   >{\centering\arraybackslash}X
+   >{\centering\arraybackslash}X}
+	\toprule[1.5pt]
+		语言 & 文件数 & 总行数 & 纯代码行数 & 注释行数 & 空行数 \\
+	\midrule[1pt]
+		Java & 27 & 2157 & 1629 & 207 & 321 \\
+		Python & 1 & 33 & 23 & 4 & 6 \\
+		XML & 1 & 137 & 107 & 15 & 15 \\
+        JSON & 79 & 26512 & 26512 & 0 & 0 \\
+        Markdown & 1 & 46 & 0 & 27 & 19 \\
+        Bash & 1 & 11 & 11 & 0 & 0 \\
+    \midrule[0.5pt]
+        合计 & 109 & 28885 & 28271 & 253 & 361 \\
+	\bottomrule[1.5pt]
+	\end{tabularx}
+\end{table}

@@ -1,0 +1,42 @@
+% !Mode:: "TeX:UTF-8" 
+
+%-----------------------------------------------------------------------------------------
+% 中文摘要
+\clearpage
+\titlespacing{\chapter}{0pt}{0mm}{5mm}
+\Abstract{摘\quad 要}{Abstract (In Chinese)}
+
+
+\defaultfont
+
+本文致力于解决云计算环境中身份与访问管理 (IAM) 策略的复杂性与潜在安全风险问题，通过设计并实现一个基于 SMT（可满足性模理论）的形式化验证系统，旨在提供一种严谨的方法来分析 IAM 策略的有效性与安全性。系统的核心目标是能够准确判断给定的 IAM 策略是否配置正确、权限是否过于宽松或严格，从而帮助用户避免因策略配置不当导致的安全漏洞。为此，本文首先对 IAM 及形式化 IAM 验证的相关技术进行了深入调研，对比了多种IAM求解方式，最终确定采用基于SMT理论的形式化求解作为主要研究方向。这种方法通过将复杂的 IAM 策略语言精确地转换为逻辑表达式，再利用 SMT 求解器的强大推理能力进行自动化分析。
+
+在系统实现层面，本文详细阐述了将 IAM 策略语言编码为 SMT 表达式的具体方案。一个关键的工作在于扩展了 Z3 SMT 求解器，构建了“Z3自动机”，使其能够有效处理 IAM 策略中常见的正则表达式，这是传统 SMT 求解器直接支持不足的方面。此外，本文在 Z3 自动机的基础上，进一步设计并成功复现了亚马逊 AWS 提出的分层抽象 (Stratified Abstraction) 算法，该算法旨在将复杂的策略分析结果以更简洁、易于理解的方式呈现给用户。本文还讨论了此算法存在的问题和潜在的性能改进空间。为了验证所开发系统的正确性和实际性能，本文设计了一套轮询监测的实验流程，用以与 AWS 自身提供的私有 IAM 策略验证服务进行对比测试。
+
+实验结果表明，本文所实现的形式化验证系统在策略分析的正确性上与 AWS 的云验证服务完全一致，证明了系统设计的有效性。在性能方面，尽管本地系统的硬件条件可能不及云服务商的数据中心，但其求解性能变化趋势与 AWS IAM 云服务表现出基本一致的特征，验证了其可行性。最后，本文对未来工作进行了展望，提出了两方面的优化方向：一是算法设计层面，通过引入更精细的分析结果分解机制（如分解为互斥子集）来进一步提升最终输出结果的简明性，避免冗余信息的出现；二是系统实现层面，计划扩展对更多值类型（例如位向量、范围值，以支持IP地址或时间范围等条件的验证）的支持，并探索通过缓存等机制优化高时间复杂度和内存占用的问题，以提升系统的整体性能和适用范围。
+
+\vspace{\baselineskip}
+\noindent{\textbf{ 关\hspace{0.5em}键\hspace{0.5em}词：}} 网络验证；身份与访问管理；形式化；SMT；分层抽象
+
+
+%-----------------------------------------------------------------------------------------
+% 英文摘要
+\clearpage
+%\phantomsection
+\markboth{Abstract}{Abstract}
+
+\titlespacing{\chapter}{0pt}{0mm}{5mm}
+\chapter*{ABSTRACT}
+
+This paper addresses the complexity and security risks of cloud Identity and Access Management (IAM) policies by developing a formal verification system based on Satisfiability Modulo Theories (SMT). The system aims to rigorously analyze IAM policy effectiveness and security, ensuring correct configurations and appropriate permission levels. The SMT-based methodology involves translating IAM policies into logical expressions for automated analysis by SMT solvers.
+
+Key implementation aspects include encoding IAM policies into SMT expressions and extending the Z3 SMT solver with a Z3 automaton to effectively handle regular expressions, a capability lacking in traditional solvers. Furthermore, Amazon AWS's Stratified Abstraction algorithm was reproduced to present analysis results more concisely, with its limitations and potential improvements also discussed. The system's correctness and performance were validated through comparative testing against AWS's proprietary IAM policy validation service.
+
+Experimental results demonstrate that the implemented system achieves complete correctness alignment with AWS's validation service in policy analysis. Moreover, its performance trends are largely consistent with the AWS IAM cloud service, affirming the system's feasibility. Future work will focus on two main directions: algorithmically, enhancing result conciseness via finer-grained decomposition mechanisms (e.g., into mutually exclusive subsets); and systemically, expanding support for more value types (such as bit vectors and range values for IP addresses or time conditions) and exploring optimizations like caching to improve overall performance and applicability.
+
+\vspace{\baselineskip}
+\noindent{\textbf{KEY WORDS:}} Network Verification; IAM; Formalization; SMT; Stratified Abstraction
+
+
+\titlespacing{\chapter}{0pt}{-6mm}{5mm}
+\clearpage{\pagestyle{empty}\cleardoublepage}

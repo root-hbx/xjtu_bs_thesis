@@ -1,0 +1,60 @@
+% !Mode:: "TeX:UTF-8" 
+
+\BiChapter{结论与展望}{}
+
+\BiSection{论文工作总结}{}
+
+本文设计并实现了基于 SMT 理论的形式化验证系统，并与云验证系统对比，得到了正确的结果和相似的性能变化特性。形式化验证系统提供了包括验证策略有效性、分析策略并给出分析结果的功能。具体而言，本文：
+
+\begin{enumerate}[wide, label=\arabic*),  labelindent=21pt]
+    \item 详细调研了 IAM 及形式化 IAM 验证的相关技术，研究对比了各种 IAM 求解方式，最终选定以基于 SMT 理论的形式化求解为主要研究方向
+    \item 基于 Z3 求解器，设计了一套将 IAM 策略语言编码为 SMT 表达式的方案，并扩展 Z3 为 Z3 自动机，以支持对包含正则表达式的 IAM 策略进行编码
+    \item 在 Z3 自动机的基础上，进一步设计复现了 AWS 的分层抽象 (Stratified Abstraction)\cite{Stratified}，并讨论了该算法存在的问题以及可能的性能改进
+    \item 针对 AWS 提供的异步验证 API, 设计并实现了一套轮询监测的实验流程，用以对比本文的实现方案和 AWS 私有实现方案的正确性和性能
+\end{enumerate}
+
+\BiSection{未来工作展望}{}
+
+\BiSubsection{算法设计优化}{}
+
+对一个策略 $p$ 和由算法\ref{access_summary}得出的分析结果 $\Sigma$，尽管\ref{partial_predicate}保证了如下性质：
+\begin{equation}
+\begin{aligned}
+\forall \sigma_1, \sigma_2 \in \Sigma, \sigma_1 \not= \sigma_2, \sigma_1 \not\preceq \sigma_2 \land \sigma_2 \not\preceq \sigma_1
+\end{aligned}
+\end{equation}
+
+即分析结果是最简明的。但这还不够简明。考察分析结果中的 3 个发现：$\sigma_1, \sigma_2, \sigma_3$，尽管算法能保证这三者之间互不满足偏序关系，但可能存在以下情况：
+\begin{equation}\label{joined_overlap}
+\exists \sigma_1, \sigma_2, \sigma_3 \in \Sigma, \sigma_3 \preceq (\sigma_1 \lor \sigma_2)
+\end{equation}
+
+即发现 $\sigma_3$ 可能是发现 $\sigma_1$ 和 $\sigma_2$ 的并集的子集，尽管三者各自不满足偏序关系。这样会导致最终的发现结果有冗余项 $\sigma_3$，因为它描述的允许域完全被 $\sigma_1 \lor \sigma_2$ 覆盖。
+
+这个问题的来源在于细化操作。在算法\ref{refine_finding}中，仅简单地将当前谓词的直接前驱元素分配给细化发现，而忽视了谓词之间就可能存在形如公式\ref{joined_overlap}的偏序关系。即可能存在：
+\begin{equation}
+\exists \phi_1, \phi_2, \phi_3 \in \text{idom}(\phi), \phi_3 \preceq (\phi_1 \lor \phi_2)
+\end{equation}
+
+要解决这个问题，可以在得到一个谓词的直接前驱元素集后再增加一步操作，将这个集合分解成\textbf{互斥}的子集。例如对于 $\text{idom}(\phi) = \{\phi_1, \phi_2, \phi_3\}$ 的情况，可以将其分解为：
+\begin{equation}
+\begin{aligned}
+\{
+\phi_1 &\land \lnot (\phi_2 \lor \phi_3), \\
+\phi_2 &\land \lnot (\phi_1 \lor \phi_3), \\
+\phi_3 &\land \lnot (\phi_1 \lor \phi_2), \\
+\phi_1 &\land \phi_2 \land \lnot \phi_3, \\
+\phi_1 &\land \phi_3 \land \lnot \phi_2, \\
+\phi_2 &\land \phi_3 \land \lnot \phi_1, \\
+\phi_1 &\land \phi_2 \land \phi_3
+\}
+\end{aligned}
+\end{equation}
+
+即可解决该问题。
+
+\BiSubsection{系统实现优化}{}
+
+本文实现的形式化验证系统对值的类型支持较少，不支持位向量、范围值等，因而难以处理诸如 IP 地址、时间范围等键的验证。
+
+本地的形式化验证系统的内存占用随着策略难度的增加而剧烈地增加，而且算法\ref{refine_finding}、\ref{reduce_finding}、\ref{kv_relation}的时间复杂度都非常高。在系统实现过程中，可以尝试通过引入缓存等机制来缓解高时间复杂度带来的计算压力，也可以通过优化实现方式来减少内存的占用。

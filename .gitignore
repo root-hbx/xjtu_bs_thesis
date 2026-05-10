@@ -1,0 +1,44 @@
+# macOS / editor noise
+.DS_Store
+._*
+*.swp
+*.swo
+*~
+
+# LaTeX build directories
+build/
+_minted*/
+
+# LaTeX auxiliary files
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.brf
+*.fls
+*.fdb_latexmk
+*.idx
+*.ilg
+*.ind
+*.lof
+*.log
+*.lot
+*.nav
+*.out
+*.run.xml
+*.snm
+*.synctex.gz
+*.thm
+*.toc
+*.xdv
+*.xdy
+*.xml
+
+# Generated documents and local submission PDFs
+*.pdf
+!figures/**/*.pdf
+pdfs-legacy/
+
+# Optional export/output folders
+docx/*.docx
+docx/*.pdf

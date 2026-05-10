@@ -1,0 +1,351 @@
+% !Mode:: "TeX:UTF-8" 
+
+\BiChapter{分层抽象算法的设计}{}
+
+\BiSection{设计目标}{}
+
+IAM 策略语言具备多项关键特性，使得用户能够构建多样化的应用程序。然而其中某些特性也给策略分析带来了挑战：首先，单个策略元素可能包含正则表达式、否定逻辑和条件语句；其次，策略元素之间可能以微妙的方式相互影响，导致策略的最终效果难以判断。我们此前设计的 SMT 编码器通过将策略编码为逻辑公式，并借助 SMT 求解器来解答策略相关问题（例如判断特定策略是否正确、过于严格或过于宽松）。虽然可以通过查询这个求解器来探究策略属性（如某资源是否“公开”可访问），但实践表明，正式的策略分析仍存在挑战——用户需要具备足够的技术素养才能识别出对其重要的判断标准，并能将这些标准转化为 SMT 查询语句。
+
+这里我们展示一个简单的 IAM 访问策略：
+
+\begin{lstlisting}[caption={示例 IAM 策略}, label={stratified_policy}]
+- Effect: Allow
+  Condition:
+    StringEquals:
+      SrcVpc:
+        - vpc-a
+        - vpc-b
+- Effect: Allow
+  Condition:
+    StringEquals:
+      OrgID: o-2
+- Effect: Deny
+  Condition:
+    StringEquals:
+      SrcVpc: vpc-b
+    StringNotEquals:
+      OrgID: o-1
+\end{lstlisting}
+
+为了降低对用户的要求，可以将问题从“该策略是否正确？”转变为“谁拥有访问权限？”。前者只需返回布尔值（是/否），而后者则需要输出一组分析结果。为了在分析安全策略及回答“拥有访问权限”时具有实际价值，这些分析结果必须满足若干关键要求：
+
+\begin{enumerate}
+    \item 完备。分析结果要能完整概括策略内容。关键是要确保策略允许的每项访问都体现在分析结果中。这种转化处理对于实现策略的组合推理至关重要——只要用户确认每个分析结果都是安全的，即可认为整个策略是安全的。
+    \item 精确。分析结果必须具备针对性。虽然“所有人都有访问权限”这一平凡结果能完整地概括所有策略，但除非策略确实允许全员访问，否则该结果毫无价值。我们追求的是与策略允许的访问严格匹配的分析结果，避免出现身份误判的虚假警报。
+    \item 简明。分析结果集合必须保持精简。例如，虽然可以枚举所有被允许的请求类型，但这样的列表往往过于冗长而无法人工核查。因此我们需要用简明的形式呈现访问权限归属，同时仍确保完备性与精确性。
+\end{enumerate}
+
+例如对示例\ref{stratified_policy}，其对应的满足要求的分析结果为：
+
+\begin{itemize}
+    \item SrcVpc = vpc-a, 或者
+    \item OrgID = o-2, 或者
+    \item SrcVpc = vpc-b 且 OrgID = o-1
+\end{itemize}
+
+上述分析结果是完备的，因为除此之外其他的请求并没有被授予访问权限；是精确的，因为只有符合这些要求的请求才会被授予访问权限；是简明的，因为仅通过三个肯定性的陈述，就总结了 IAM 访问策略的核心内容，即谁有访问权限。
+
+\BiSection{分层抽象算法}{}
+
+直觉上，如果想要一个分析结果尽可能地简明，则需要这个结果中的每一项描述的范围足够\textbf{大}；而这个范围又\textbf{不能太大}，以至于超过了完备性和精确性的要求。基于这个思想，可以设计出一种算法，总是从最平凡的描述项（全集）出发，尽可能\textbf{晚}地将大的描述项拆分成较小的描述项，从而尽力保证前文提到的三个要求。
+
+\BiSubsection{定义}{}
+
+\textbf{键}。一个键代表一个需要验证的域或者关键字等。例如主体，行为，资源等都是键。更详细地，在示例\ref{policy_file_example}中，键包括：
+
+\begin{itemize}
+    \item Principal。
+    \item AWS，是 Principal 的子键，因为它被包含在 Principal 中。
+    \item Action。
+    \item Resource。
+    \item principalArn。
+\end{itemize}
+
+而在示例\ref{stratified_policy}中，键包括：
+
+\begin{itemize}
+    \item SrcVpc
+    \item OrgID
+\end{itemize}
+
+\textbf{值}。和键对应的值，通常为字符串，正则表达式等。例如在示例\ref{policy_file_example}中，对第一条陈述，有如下对应关系：
+
+\begin{itemize}
+    \item AWS 对应 arn:aws:iam:123456:user/1234
+    \item Action 对应 s3:listBucket 或 s3:getObject
+    \item Resource 对应 arn:aws:s3:::exampleBucket
+\end{itemize}
+
+类似地，在示例\ref{stratified_policy}中，对第一条陈述，有：SrcVpc 对应 vpc-a 或 vpc-b。
+
+\textbf{请求}。请求是一系列的键值对，每个键可以对应多个值。令 $K = \{k_1, k_2, \dots, k_n\}$ 为键的集合，$V_k = \{v_1, \dots |  k \in K\}$ 为 $K$ 中某个键对应的取值集合，全体取值的集合为 $V = \{V_k | k \in K\}$。则请求 $r$ 是定义在 $K$ 到 $V$ 上的映射：
+\begin{equation}\label{def_request}
+r := \{(k, V_k) | k \in K \land V_k \in V\}
+\end{equation}
+
+例如在示例\ref{policy_file_example}中，存在这样一条请求 $r_{example}$：
+\begin{equation}
+\begin{aligned}
+\text{AWS} &\to \text{arn:aws:iam:123456:user/1234} \\
+\text{Action} &\to \{\text{s3:listBucket}, \text{s3:getObject}\} \\
+\text{Resource} &\to \text{arn:aws:s3:::exampleBucket}
+\end{aligned}
+\end{equation}
+
+记号 $r(k)$ 的定义为，在请求 $r$ 中，键 $k$ 对应的取值集合。例如对前文示例中的 $r_{example}$ 有：$r_{example}(\text{AWS}) = \text{arn:aws:iam:123456:user/1234}$。
+
+\textbf{策略}。策略是一种映射，将所有可能的请求（由集合 $R$ 描述）都映射为一个布尔值，代表是否允许这个请求访问：
+\begin{equation}\label{def_policy}
+p := \{(r, Bool) | r \in R\}
+\end{equation}
+
+记号 $p(r)$ 定义为：在策略 $p$ 下，某个请求 $r$ 的映射值。如果这个策略拒绝这个请求的访问，则映射值为 $False$，反之为 $True$。
+
+\textbf{谓词}。谓词是定义在一个键值对和布尔空间上的映射，将一个键值对映射为一个布尔值，代表某个键的某个取值是否满足这个谓词的要求：
+\begin{equation}\label{def_predicate}
+\begin{aligned}
+\phi &:= \{(k, v, Bool) | k \in K \land v \in V_k\} \\
+\phi_k &:= \{(v, Bool) | k \in K \land v \in V_K\}
+\end{aligned}
+\end{equation}
+
+记号 $\phi_k$ 的定义为：谓词的全集 $\phi$ 作用于键 $k$ 上的子集：$\phi_k \subseteq \phi$。
+
+记号 $\phi_k(v)$ 的定义为：在谓词 $\phi$ 下，是否允许某个键 $k$ 取得某个值 $v$。如果不允许取这个值，则结果为 $False$，反之为 $True$。
+
+\textbf{发现}。发现是一系列的键值对的集合，代表了不同的键允许取得的对应的值：
+\begin{equation}\label{def_finding}
+\sigma = \{(k, v) | k \in K \land v \in V_k\}
+\end{equation}
+
+记号 $\sigma(k)$ 的定义为：在发现 $\sigma$ 中，键 $k$ 对应的取值。
+
+不难注意到，发现 $\sigma$ 在描述键值对时亦描述了一个谓词关系 $\phi$，每个键值对描述的是对于这个键的谓词关系 $\phi_k$。所以 $\sigma(k)$ 的返回值也可以是 $k$ 对应的谓词 $\phi_k$。
+
+\BiSubsection{性质}{}
+
+\textbf{允许域}。允许范围 $\gamma()$ 是一个函数，返回所有使传入参数的返回值为 $True$ 的值的集合。
+
+例如，策略 $p$ 的允许域为所有映射值为 $True$ 的请求 $r$ 的集合，即所有在这个策略下允许访问的请求：
+\begin{equation}\label{allow_policy}
+\gamma(p) = \{r | p(r) = True\}
+\end{equation}
+
+谓词 $\phi_k$ 的允许域为所有让该谓词返回 $True$ 的值 $v$ 的集合：
+
+\begin{equation}\label{allow_predicate}
+\gamma(\phi_k) = \{v | \phi_k(v) = True\}
+\end{equation}
+
+类似地，发现 $\sigma$ 的允许域为：
+\begin{equation}\label{allow_finding}
+\gamma(\sigma) = \{r | \forall k, r(k) \in \gamma(\sigma(k))\}
+\end{equation}
+
+此处，$\sigma(k)$ 代表发现 $\sigma$ 中，键 $k$ 对应的谓词关系 $\phi_k$。
+
+对于一个集合，该集合的允许域为集合中所有元素的允许域的并集：
+\begin{equation}\label{union_allow}
+\gamma(\{\sigma_1, \dots, \sigma_n\}) = \bigcup\limits_{i = 1 \dots n} (\gamma(\sigma_i))
+\end{equation}
+
+\textbf{偏序性}。对于键 $k$ 和取值 $v$，定义其偏序关系为子集关系：
+\begin{equation}\label{partial_kv}
+\begin{aligned}
+p_1 \preceq p_2 &\iff \gamma(p_1) \subseteq \gamma(p_2) \\
+V_1 \preceq V_2 &\iff \gamma(V_1) \subseteq \gamma(V_2)
+\end{aligned}
+\end{equation}
+
+不难证明，键和值的关系是子集关系的一个等价变换，从而满足自反性，反对称性，传递性，是偏序关系。
+
+具体而言，对于键 principal 和键 IAM，IAM 就是 principal 的前驱，即 $\text{IAM} \preceq \text{principal}$，因为 IAM 是 principal 键下的一个子键。
+
+对于谓词 $\phi$，选择其键 $k$ 来构造偏序关系：
+\begin{equation}\label{partial_predicate}
+\phi_{k_1} \preceq \phi_{k_2} \iff \gamma(k_1) \subseteq \gamma(k_2)
+\end{equation}
+
+不难注意到，谓词的偏序关系是键的偏序关系的等价变换，进而是子集关系的等价变换，从而是偏序关系。
+
+具体而言，对于键 principal 和键 IAM，有 $\phi_{\text{IAM}} \preceq \phi_{\text{principal}}$。更进一步地，可以指出，谓词的偏序关系构成一个良序集，即对于任意两个谓词 $\phi_1$ 和 $\phi_2$，都有：
+
+\begin{itemize}
+    \item $\phi_1 \preceq \phi_2$
+    \item 或者 $\phi_2 \preceq \phi_1$
+    \item 或者 $\gamma(\phi_1) \cap \gamma(\phi_2) = \emptyset$
+\end{itemize}
+
+对其它的定义，均可以通过类似的方法构造出偏序关系。于是，我们可以用偏序关系来刻画直觉上\textbf{大}的关系。
+
+既然谓词的偏序关系构成了良序集，那么相应地就有最大元、直接前驱等关系。
+
+\textbf{最大元}。存在这样一个谓词 $\phi_*$，它是所有其他谓词的后继，这样的谓词记为最大元，即：
+\begin{equation}
+    \exists \phi_*, \forall \phi \in \Phi, \phi \preceq \phi_*
+\end{equation}
+
+\textbf{直接前驱}。对于两个谓词 $\phi'$ 和 $\phi$，如果：
+\begin{equation}\label{idom}
+\not\exists \phi'', \phi' \prec \phi'' \prec \phi
+\end{equation}
+
+则称 $\phi'$ 是 $\phi$ 的直接前驱，所有满足要求的 $\phi'$ 组成的集合为 $\phi$ 的直接前驱集，记为 $\text{idom}(\phi)$。
+
+\textbf{覆盖性}。对于一组发现的集合 $\Sigma$ 和一个策略 $p$，当 $\gamma(p) \subseteq \gamma(\Sigma)$ 时，称发现集 $\Sigma$ 覆盖 策略 $p$。换言之，当策略 $p$ 的允许域是发现集 $\Sigma$ 的子集时，称发现集 $\Sigma$ 覆盖 策略 $p$。
+
+\textbf{精细化}。对于两个发现 $\sigma'$ 和 $\sigma$，如果：
+\begin{equation}
+\forall k \in K, \sigma'(k) \preceq \sigma(k)
+\end{equation}
+
+则称 $\sigma'$ 是 $\sigma$ 的一个细化，记为 $\sigma' \sqsubseteq \sigma$。同理，发现集 $\Sigma$ 的一个细化 $\sigma'$ 满足：
+\begin{equation}
+\exists \sigma \in \Sigma, \sigma' \sqsubseteq \sigma
+\end{equation}
+
+不难注意到，
+\begin{equation}
+\sigma' \sqsubseteq \sigma \implies \gamma(\sigma') \subseteq \gamma(\sigma)
+\end{equation}
+
+\begin{algorithm}[H]
+    \caption{Refine \label{refine_finding}}
+    \IncMargin{2em}
+    \DontPrintSemicolon
+    \KwIn{Finding $\sigma$}
+    \KwOut{Set of refined findings $\Sigma$}
+
+    $\text{refinements} \gets \emptyset$ \tcp*{初始化细化集}
+    \For{$k \in K$}{
+        \For{$\phi'_k \in \text{idom}(\sigma(k))$}{
+            $\sigma_{tmp} \gets \sigma$ \tcp*{基于原发现创建一个新发现}
+            $\sigma_{tmp}(k) \gets \phi'_k$ \tcp*{替换一个谓词}
+            $\text{refinements} \gets \text{refinements} + \sigma_{tmp}$ \tcp*{加入细化集中}
+        }
+    }
+    \Return $\text{refinements}$
+\end{algorithm}
+
+算法\ref{refine_finding}给出了精细化的具体步骤。想要对一个发现 $\sigma$ 进行细化，只要任选一个键 $k$，将其谓词 $\phi_k = \sigma(k)$ 替换为这个谓词的直接前驱集中的一个谓词 $\phi'_k \in \text{idom}(\phi_k)$ 即可。这样可以得到发现 $\sigma$ 的一个细化集合，其中每个元素 $\sigma'$ 都是 $\sigma$ 的细化。值得注意的是，对任意的发现 $\sigma$，都有自身作为一个平凡的细化，但其对推进问题的解决没有帮助，所以我们不予讨论。
+
+\textbf{不可约化}。对某个策略 $p$ 和发现 $\sigma$，如果：
+\begin{equation}
+\exists r \in \gamma(\sigma) \cap \gamma(p), \forall \sigma' \sqsubset \sigma, r \notin \gamma(\sigma')
+\end{equation}
+
+则称 $\sigma$ 是不可约化的。换言之，至少存在一条被发现 $\sigma$ 和策略 $p$ 允许的请求 $r$，而这个请求不存在于任何 $\sigma$ 的细化中。或者说，如果对 $\sigma$ 进行细化操作，则会损失掉一些原本能被允许的请求。
+
+通过不可约化性，我们可以刻画直觉上的\textbf{不能太大}。即当一个发现是不可约化的时候，认为它是不太大的，可以作为分析结果之一。
+
+同样地，给出对发现 $\sigma$ 进行约化的算法：
+
+\begin{algorithm}[H]
+    \caption{ReducePred \label{reduce_predicate}}
+    \IncMargin{2em}
+    \DontPrintSemicolon
+    \KwIn{Predicate $\phi$}
+    \KwOut{Reduced predicate $\phi'$}
+
+    $\phi_1, \phi_2, \dots, \phi_n = \text{idom}(\phi)$ \tcp*{获取谓词 $\phi$ 的所有直接前驱}
+
+    \Return $\phi \land \lnot(\bigvee\limits_{i=1, \dots, n} \phi_i)$
+\end{algorithm}
+
+\begin{algorithm}[H]
+    \caption{Reduce \label{reduce_finding}}
+    \IncMargin{2em}
+    \DontPrintSemicolon
+    \KwIn{Finding $\sigma$}
+    \KwOut{Reduced Finding $\sigma'$}
+
+    $\sigma' \gets \sigma$ \tcp*{初始化新的 finding}
+    \For{$k \in K$}{
+        $\sigma'(k) \gets \text{ReducePred}(\sigma(k))$ \tcp*{将所有的谓词都替换为约化后的谓词}
+    }
+
+    \Return $\sigma'$
+\end{algorithm}
+
+至此，本小节开头提出的三个直觉性描述已经得到了严格的数学刻画。即利用偏序性刻画直觉上\textbf{大}的关系，利用不可约化性刻画直觉上\textbf{不能太大}的关系，联合不可约化性和精细化操作来刻画直觉上\textbf{晚}的关系。
+
+基于以上的描述，我们可以设计一种算法，从最大元开始处理，如果当前发现是不可约化的，则将其加入分析结果中，否则将其精细化，并逐个考察其精细化后产生的发现。接下来，我们给出这个算法的具体描述。
+
+\BiSubsection{算法}{}
+
+\begin{algorithm}[H]
+    \caption{CanAccess \label{can_access}}
+    \IncMargin{2em}
+    \DontPrintSemicolon
+    \KwIn{Policy $p$, Finding $\sigma$}
+    \KwOut{Bool}
+
+    \If{$\gamma(\sigma) \cap \gamma(p) \not= \emptyset$}{
+        \Return $True$
+    }
+    \If{$\gamma(\sigma) \cap \gamma(p) = \emptyset$}{
+        \Return $False$
+    }
+\end{algorithm}
+
+\begin{algorithm}[H]
+    \caption{AccessSummary \label{access_summary}}
+    \IncMargin{2em}
+    \DontPrintSemicolon
+    \KwIn{Policy $p$}
+    \KwOut{Set of findings $\Sigma$}
+
+    $\sigma_* \gets \emptyset$
+    \For{$k \in K$}{
+        $\sigma_*(k) = \phi_*$ \tcp*{用谓词最大元初始化每一个键}
+    }
+    work\_list = queue($\sigma_*$) \tcp*{初始化工作队列}
+    $\text{results} \gets \emptyset$ \tcp*{初始化返回集合}
+
+    \While{$\text{work\_list} \not= \emptyset$}{
+        $\sigma \gets \text{work\_list.head()}$ \tcp*{从工作队列中取出一个发现}
+        \If{CanAccess($p$, Reduce($\sigma$))}{
+            $\text{results} \gets \text{results} + \sigma$ \tcp*{不可约化，则加入返回集合中}
+        }
+        \Else{
+            \For{$\sigma' \in \text{Refine}(\sigma)$}{
+                \If{$\sigma' \not\sqsubseteq \text{results}$}{
+                    $\text{work\_list} \gets \text{work\_list} + \sigma'$ \tcp*{不可约化且不被包含于返回集合中，则加入工作队列}
+                }
+            }
+        }
+    }
+
+    \Return results
+\end{algorithm}
+
+对于一个策略 $p$ 和一个发现 $\sigma$，可以给出算法\ref{can_access}和算法\ref{access_summary}两个算法。
+
+对于算法\ref{can_access}，我们约定，当存在至少一条请求同时满足 $p$ 和 $\sigma$ 的要求时，则返回 $True$，否则返回 $False$。这个算法可以由第三节讲述的 SMT 编码器实现。算法\ref{access_summary}则指出了分层抽象算法的实现方式。
+
+例如对于示例策略\ref{stratified_policy}，按照如上算法，可以画出其运算流程图：
+
+\begin{figure}[H]
+\centering
+% \includegraphics{run_tree.png}
+\includegraphics[width=\textwidth]{run_tree.pdf}
+\caption{运算流程图} \label{algorithm_tree}
+\end{figure}
+
+在示例策略\ref{stratified_policy}中，仅有两个键：SrcVpc 和 OrgID。所以所有的发现项也只有两个键。在运算流程图中，根节点代表的是由谓词最大元组成的发现（使用 All 表达），并作为初始发现被加入到工作队列中进行处理。经验证，这个发现是可约化的，不能被直接加入到返回集合中，因而被标红，并经过 Refine 操作产生下一层的 4 个细化发现。同样地，对 4 个细化发现，经验证有两个发现： vpc-a (AND) All 和 All (AND) o-2 满足不可约化的条件，可以被加入到返回集合中，因而被标绿。剩下的则继续进行细化。更下一层到细化发现中仅有 vpc-a (AND) o-1 不是已经被加入到返回集合中的发现的前驱，且经验证满足不可约化条件，可以被加入到返回集合中，因而被标绿。至此，所有可以产生的发现均已得到计算，算法结束。
+
+\BiSubsection{理论}{}
+
+\textbf{引理1}。当且仅当 $\gamma(\text{Reduce}(\sigma)) \cap \gamma(p) \not= \emptyset$ 时，称发现 $\sigma$ 是\textbf{不可约化}的。
+
+\textbf{引理2}。如果发现 $\sigma$ 在策略 $p$ 下\textbf{可约化}，则有 $\gamma(\sigma) \cap \gamma(p) = \gamma(\text{Refine}(\sigma) \cap \gamma(p)$。
+
+\textbf{定理}。令 $\Sigma = \text{AccessSummary}(p)$，则：
+
+\begin{enumerate}
+    \item $\Sigma$ 是策略 $p$ 的一个\textbf{覆盖}。
+    \item $\forall \sigma \in \Sigma$，$\sigma$ 是\textbf{不可约化的}。
+    \item $\Sigma$ 是\textbf{最简明的}。
+\end{enumerate}
+
+至此，关于分层抽象算法的讨论已经比较清楚了。

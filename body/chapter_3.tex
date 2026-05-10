@@ -1,0 +1,142 @@
+% !Mode:: "TeX:UTF-8" 
+
+\BiChapter{SMT 编码器的设计}{}
+
+\BiSection{设计目标}{}
+
+需要设计一款 SMT 编码器，能够解析给定的 IAM 策略文件，并将解析后的策略编码为 SMT 表达式。然后，使用 SMT 求解器来检查编码后的 SMT 表达式的相关形式。例如，这个 SMT 编码器要能够回答如下问题：“这个资源能否被某个用户访问？”或者“是否所有用户都可以写入这个资源？”等问题。待检查的性质已经被包含在了策略文件的配置语法中，所以不需要对这些性质做额外的指定或者格式化操作。
+
+在配置文件中，包含 wildcard 通配符，如 *、？等。SMT 编码器要能正确地处理包含这些字符的字符串，并准确理解这些字符串所描述的语义。
+
+\BiSection{编码方法}{}
+
+\BiSubsection{IAM 策略概览}{}
+
+AWS IAM 策略使用 JSON 语言编写，包含若干个字符串 $\to$ 列表/字符串的映射。其格式大体如下：
+\begin{equation}\label{policy_format}
+\begin{aligned}
+    Policy &\to Statement* \\
+    Statement &\to (Effect, Principal, Action, Resource, Condition?) \\
+    Effect &\to allow | deny \\
+    Principal &\to principal : string* \\
+    Action &\to action : string* \\
+    Resource &\to resource : string* \\
+    Condition &\to condition : Operator* \\
+    Operator &\to (OpName, KeyName, Value*) \\
+    OpName &\to StringEquals | StringEqualsIfExists | StringLike | StringNotEquals | \dots \\
+    KeyName &\to aws:sourceVpc | s3:prefix | \dots
+\end{aligned}
+\end{equation}
+
+在公式\ref{policy_format}中，$*$ 代表一组元素，$?$ 代表该元素为可选的。更详细地，一个策略 (Policy) 是一系列陈述 (Statement) 的列表。每项陈述都包含一个五元组 $(Effect, Principal, Action, Resource, Condition?)$ 。效用 (Effect) 字段指明本条陈述是肯定性 (allow) 的还是否定性 (deny)的。默认情况下，总是否定对资源的访问，换言之，想要访问一个资源，必须在策略中通过肯定性的陈述显式地授予访问权限。主体 (Principal) 字段用于指明陈述生效的对象，例如用户名，账户 ID 等，通过唯一的字符串来识别。行为 (Action)字段指明陈述生效的，作用于资源上的一系列操作，例如列出可用资源，修改某一个资源等。资源 (Resource) 字段指明陈述生效的一系列资源。可以在行为和资源字段中使用 wildcard 通配符。上述字段是必需的。
+
+条件 (Condition) 字段是可选字段，可以在必需字段更加精细地操纵策略行为。条件字段由三元组 $(OpName, KeyName, Value*)$ 组成，其中运算符 (OpName) 指明每个键 (KeyName) 和它的取值 (Value) 之间要满足何种关系。例如，当运算符为 StringEquals 时，则检查键是否与其取值相等；当运算符为 StringLike 时，则检查键是否与其取值对应的正则表达式相匹配。
+
+以下是一个 IAM 策略文件示例：
+
+\begin{lstlisting}[caption={示例 IAM 策略}, label={policy_file_example}]
+- Effect: Allow
+  Principal:
+    AWS: arn:aws:iam:123456:user/1234
+  Action:
+    - s3:listBucket
+    - s3:getObject
+  Resource: arn:aws:s3:::exampleBucket
+- Effect: Deny
+  Principal:
+    AWS: arn:aws:iam:123456:user/1234
+  Action: s3:getObject
+  Resource: arn:aws:s3:::anotherBucket
+  Condition:
+    StringLike:
+      principalArn: arn:aws:iam:123456:arn/1234
+\end{lstlisting}
+
+\BiSubsection{SMT 编码策略}{}
+
+在本小节中，我们将讨论 SMT 编码策略。该策略联合使用字符串，正则表达式等方法来处理 IAM 策略文件中的字段。IAM 策略文件的语法是声明式的，不存在诸如循环、动态数组等编程语言的特性，这使得我们可以较为方便地将其编码为 SMT 格式。一般地，一个 IAM 策略文件能够被等价地编码成所有肯定性的陈述和所有否定性的陈述的合取，而每个肯定性或否定性的陈述进行析取，则可以得到总体的肯定性陈述或否定性陈述：
+\begin{equation}\label{general_encoding}
+\left( \bigvee_{S \in \text{Allow}} [S] \right) \land \neg \left( \bigvee_{S \in \text{Deny}} [S] \right)
+\end{equation}
+
+在公式\ref{general_encoding}中，$Allow$ 和 $Deny$ 分别代表一个 IAM 策略中肯定性的和否定性的陈述。$[S]$ 代表这个陈述所描述的取值集合。每一个陈述语句都可以分别按照主体，行为，资源和条件语句进行编码。其中，描述主体，行为，资源的总语句可以表示为各自的子语句的析取，而条件的总语句需要表示为所有子语句的合取。最终的表达式为所有部分的合取：
+\begin{equation}\label{statement_encoding}
+\begin{aligned}
+[S] := &\left( \bigvee_{v \in P(S)} p=v \right) \land \left( \bigvee_{v \in A(S)} a=v \right) \land \\
+       &\left( \bigvee_{v \in R(S)} r=v \right) \land \left( \bigwedge_{O \in C(S)} [O] \right)
+\end{aligned}
+\end{equation}
+
+在公式\ref{statement_encoding}中，$P(S)$ 表示主体字段中所有可取的字符串值，相应地，$A(S)$ 和 $R(S)$ 分别表示行为字段和资源字段所有可取的字符串值。$C(S)$ 则表示所有按照各自的条件运算符进行运算的键值对的结果。变量 $p, a, r$ 分别代表主体，行为和资源三个验证域。
+
+同理，对于每一条条件语句，都有如下编码策略：
+\begin{equation}\label{condition_encoding}
+[O] := \bigwedge_{\langle op, k, V \rangle \in CO(O)} \left( \text{condExists}_k \land \left( \bigvee_{v \in V} op(k,v) \right) \right)
+\end{equation}
+
+在公式\ref{condition_encoding}中，$CO(O)$ 表示这条条件语句所有可取的值，布尔变量 $\text{condExists}_k$ 用于指示对应的键在实际验证求解的上下文中是否存在，变量 $k$ 代表需要验证的键。条件运算符 $op()$ 被定义为一个函数，作用于条件语句的键值对上，描述了这个键需要满足的某种取值关系。
+
+根据上述的编码公式，我们不难写出示例策略\ref{policy_file_example}对应的 SMT 编码公式：
+\begin{equation}\label{example_policy_encoded}
+\begin{aligned}
+\text{principal} &: \text{aws} = \text{arn:aws:iam:123456:user/1234} \\
+\text{action}_1 &: \text{a} = \text{s3:listBucket} \lor \text{a} = \text{s3:getObject} \\
+\text{action}_2 &: \text{a} = \text{s3:getObject} \\
+\text{resource}_1 &: \text{r} = \text{arn:aws:s3:::exampleBucket} \\
+\text{resource}_2 &: \text{r} = \text{arn:aws:s3:::anotherBucket} \\
+\text{condition} &: \text{StringLike}(\text{principalArn}, \\
+                 &\text{arn:aws:iam:123456:arn/1234}) \\
+\text{S}_1 &: \text{principal} \land \text{action}_1 \land \text{resource}_1 \\
+\text{S}_2 &: \text{principal} \land \text{action}_2 \land \text{resource}_2 \land \text{condition} \\
+\text{S} &: \text{S}_1 \land \lnot \text{S}_2
+\end{aligned}
+\end{equation}
+
+不难注意到，取值主要有两种类型，即字符串常量和正则表达式。对于字符串常量，可以轻易地通过 SMT 等式进行编码，而对于正则表达式匹配问题，前文提到的 SMT 求解器方案中均没有直接的编码方式，因此需要为其单独设计一种编码方式。
+
+\BiSubsection{正则表达式与自动机}{}
+
+\begin{algorithm}[H]
+    \caption{正则表达式构建算法 \label{build_regex_algo}}
+    \IncMargin{2em}
+    \DontPrintSemicolon
+    \KwIn{String $s$}
+    \KwOut{Regular Expression $R$}
+    
+    $\text{parts} \gets \emptyset$ \tcp*{初始化组件列表}
+    $\text{buf} \gets \emptyset$ \tcp*{初始化字符缓冲区}
+    \For{$i = 0 \to |s|-1$}{
+        \If{$s[i] \text{is wildcard}$}{
+            $\text{buf} \gets \text{buf} + s[i]$ \tcp*{处理缓冲字符}
+            \text{handle quantifiers} \tcp*{处理通配符及其量词}
+        }
+        \ElseIf{$s[i] \text{is quantifier}$}{
+            \text{apply quantifier to the last char of buf} \tcp*{特殊字符处理}
+            $\text{buf} \gets \emptyset$ \tcp*{清空缓冲区}
+        }
+        \Else{
+            $\text{buf} \gets \text{buf} + s[i]$ \tcp*{累积普通字符}
+        }
+    }
+    \If{$\text{buf} \neq \emptyset$}{
+        $\text{parts} \gets \text{parts} + \text{buf}$ \tcp*{处理末尾字符}
+    }
+    \Return $\text{concat}(\text{parts})$ \tcp*{拼接最终正则表达式}
+\end{algorithm}
+
+\begin{figure}[H]
+\centering
+% \includegraphics{regex_breakdown}
+\includegraphics[width=\textwidth]{regex_breakdown.pdf}
+\caption{正则表达式的分解} \label{regex_breakdown}
+\end{figure}
+
+由自动机理论可知，每一个正则表达式都与一个有穷自动机相对应。因此，可以考虑基于 SMT 求解器构建一台和正则表达式对应的确定性有穷自动机来完成对正则表达式的编码。简单而不失一般性地，我们考察包含一个通配符 $.$， 一个克林闭包 $*$ 和普通闭包 $+$ 的正则表达式：
+\begin{equation}\label{regex_example}
+r = \text{ab.cde} \text{.*} \text{fg} \text{.+}
+\end{equation}
+
+可以将其拆分为如图\ref{regex_breakdown}中的若干部分。在图\ref{regex_breakdown}中，我们将一个正则表达式拆分为两种不同的类型：静态部分和原子表达式。静态部分代表此项中不含任何正则表达式运算符，可以直接利用字符串相等来进行编码。原子表达式则是最小的，仅包含一个先行元素和一个正则运算符的表达式。在示例表达式\ref{regex_example}中，有三个静态部分：$\text{ab}$，$\text{cde}$ 和 $\text{fg}$，有三个原子表达式 $\text{.}$，$\text{.*}$ 和 $\text{.+}$。
+
+对于原子表达式，可以采用重复模式匹配来进行编码。Z3 提供了方便的关于重复模式匹配的实现。最终算法由算法\ref{build_regex_algo}给出。
+
