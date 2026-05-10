@@ -1,141 +1,28 @@
-\BiAppChapter{外文文献译文}{}
+\BiAppChapter{外文文献译文}{Translation}
 
-{\noindent\textbf{题目: }访问控制策略的分层抽象
+{\centering
+\includegraphics[width=\textwidth, page=1, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=2, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=3, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=4, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=5, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=6, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=7, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=8, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=9, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=10, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=11, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=12, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=13, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=14, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=15, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=16, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=17, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=18, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=19, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=20, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=21, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+\includegraphics[width=\textwidth, page=22, trim = 15mm 20mm 15mm 20mm]{figures/starcdn-cn.pdf}
+}
 
-\noindent \textbf{作者: }John Backes et al.
-
-\noindent\textbf{摘要: }}因为应用软件基于云服务的 API, 所以对云服务资源访问控制策略的理解和推理对应用程序安全至关重要. 我们提出一种名为分层谓词抽象(stratified predicate abstraction)的新方法, 可以将复杂的安全策略总结为一组简洁的声明语句, 这些语句能够精确地描述谁能够访问资源. 我们实现了分层抽象算法, 并将其部署为 AWS IAM 访问分析器的驱动引擎, 从而展示如何利用形式化的方法和 SMT 来进行安全策略解释.
-
-\begin{center}
-    1 引言
-\end{center}
-
-越来越多的开发者正在使用基于云服务来实现的基础资源来构建客户端应用程序，这些基础资源包括关联数组，加密，存储，队列和事件驱动执行等。例如，数百万亚马逊云服务 (AWS) 客户使用这些云 API: Amazon SQS 用于队列，Amazon S3 用于存储，Amazon KMS 用于密钥管理，Amazon DynamoDB 用于关联数组，AWS Lambda 用于在纯虚拟化环境中执行函数。这种向云的转变使得应用程序安全尤其依赖于对策略的深入理解和推理。这些策略用于控制不同的主体是否可以访问资源以及如何访问这些云服务资源。例如，AWS 用户可以在身份访问控制 (IAM) 文件中配置主体。用户通过资源策略决定哪些请求被允许访问。这些策略允许某些资源可以按需在整个互联网上共享，而其它资源的访问权限则被限制在有限的身份集合内。
-
-IAM 策略语言具有诸多功能，这对于用户构建各种可能的应用程序至关重要。而其中某些功能给对策略的推理带来了挑战。首先，单个的策略元素可以使用正则表达式，否定和条件语句。其次，策略元素能通过微妙的方式相互关联，使得策略的最终效果不明确。此前，我们开发了 ZELKOVA，这个工具能将策略编码为逻辑公式，然后利用 SMT 求解器来回答关于策略的问题，例如：某个策略是否正确，过于严格或过于宽松。尽管可以通过查询 ZELKOVA 来考察策略的属性，例如某个资源是否可以“公开”访问, 我们的经验表明，形式化策略分析仍然具有挑战性，因为用户有足够的技术能力，才能意识到哪些标准对他们而言是重要的，而且能够将这些标准形式化为 ZELKOVA 查询。
-
-在本文中，我们提出了一种新的方法，通过将复杂的安全策略抽象为一组简洁的，能够精确地总结谁能够访问资源声明语句，来帮助用户理解他们的策略是否正确。用户能够审查策略总结来确定策略是否正确地按他们的意图分配了访问权限。计算这种策略总结的关键挑战在于在可能的请求数量上的组合爆炸，这些请求包含用户名、账户、认证器、主机名、IP 地址等的组合。
-
-\begin{center}
-    2 概述
-\end{center}
-
-AWS 访问控制策略通过一组允许 (Allow) 和拒绝 (Deny) 语句来指定谁有权访问给定资源，这些语句分别授予和禁止访问。图 1 显示了一个简化策略，指定了对特定资源的访问。该策略使用基于请求来源网络（称为 VPC）以及发出请求的组织性亚马逊客户（通过 Org ID 引用）的条件。第一个语句允许其 SrcVpc 为 vpc-a 或 vpc-b 的任何请求访问。第二个语句允许其 OrgId 为 o-2 的任何请求访问。然而，第三个语句拒绝来自 vpc-b 的访问，除非 OrgId 是 o-1。
-
-至关重要的是，对于每个请求，只有在以下情况下才授予访问权限：(a) 某个 Allow 语句匹配该请求，并且 (b) 没有任何 Deny 语句匹配该请求。因此，确定给定策略允许哪些访问可能相当棘手。首先，单个语句可以使用正则表达式、否定和条件。其次，要了解一个 Allow 语句的效果，必须考虑所有可能与其重叠的 Deny 语句，即可能引用与 Allow 语句相同请求的 Deny 语句。因此，策略验证不是组合式的 (compositional)，因为我们不能仅仅通过局部检查每个语句是否“正确”来确定策略是否“正确”。相反，我们需要一个全局验证机制，该机制同时考虑所有语句及其微妙的相互作用，以确定策略是否仅授予了预期的访问权限。
-
-随着策略的有机增长并变得越来越复杂和繁琐，用户最终面临的问题是：“我的策略正确吗？”当然，自从形式化方法发明以来，这个规约问题 (specification problem) 一直困扰着它们。在我们的背景下：安全分析师如何知道策略实际上没有过于严格或过于宽松？亚马逊简单存储服务 (S3) 的用户已经在使用 ZELKOVA 来确定他们的任何“数据桶”是否可公开访问。更广泛地说，AWS Config 服务提供了模板化的 ZELKOVA 检查，用户可以填写这些模板来验证他们的策略。一些高级用户甚至直接使用 Zelkova 服务，提出他们自己关于策略的问题。虽然以上所有方法都很有用，但形式化策略和形式化分析仍然难以使用，因为用户必须具备足够的技术复杂性才能：(1) 凭直觉判断对他们重要的标准，(2) 将上述内容形式化为 ZELKOVA 的查询语言，以及 (3) 解释工具返回的结果。最终，要回答“这个策略正确吗？”，工具必须帮助用户理解在他们特定的上下文中，“正确”意味着什么。
-
-\begin{center}
-    2.1 方法
-\end{center}
-
-这项工作的核心贡献是将问题从“这个策略正确吗？”转变为“谁有权访问？”。对前者的回答是一个布尔值，而对后者的回答是一组发现项 (findings)。为了在分析安全策略和回答“谁有权访问？”问题时有用，发现项必须满足几个关键要求：
-
-\begin{enumerate}
-    \item 健全性 (Soundness): 用户需要确信发现项总结了策略。特别是，我们必须确保策略允许的每一次访问都由某个发现项表示。这种过近似 (over-approximation) 至关重要地实现了对策略的组合式推理：如果用户认为每个发现项都是安全的，那么她就可以放心整个策略是安全的。
-    \item 精确性 (Precision): 用户要求发现项是具体的。一个“每个人都有访问权限”的发现项是对每个策略的健全且过近似的总结，但只有当策略确实允许每个人访问时才有用。相反，我们希望发现项能紧密贴合策略允许的访问，并且不报告声称某些身份具有访问权限而实际上并非如此的误报 (false-alarms)。
-    \item 紧凑性 (Compactness): 用户要求发现项集合要小。例如，我们可以简单地枚举所有具有访问权限的不同类型的请求，但这样的列表通常太大而无法手动检查。相反，我们要求发现项是对谁有访问权限的紧凑表示，同时仍确保健全性和精确性。
-\end{enumerate}
-
-示例： 例如，图 1 中的策略可以通过一组三个发现项来总结，说明当且仅当请求满足以下条件之一时才授予访问权限：
-
-\begin{enumerate}
-    \item 其 SrcVpc 是 vpc-a，或者，
-    \item 其 OrgId 是 o-2，或者，
-    \item 其 SrcVpc 是 vpc-b 且其 OrgId 是 o-1。 这些发现项是健全的，因为没有其他请求被授予访问权限。这些发现项是精确的，因为在每种情况下，都存在匹配条件并被授予访问权限的请求。最后，这些发现项以三个肯定的语句紧凑地总结了策略，声明了谁拥有访问权限。
-\end{enumerate}
-
-\begin{center}
-    2.2 解决方案：通过分层抽象计算发现项
-\end{center}
-
-接下来，我们非正式地概述计算发现项的算法，分三个阶段构建它。
-
-\begin{enumerate}
-    \item 具体枚举 (Concrete Enumeration): 一种合成发现项的方法是 (1) 枚举可能的请求，(2) 查询 ZELKOVA 以过滤掉没有访问权限的请求，以及 (3) 将剩余部分作为发现项返回。这种方法保证既健全又精确。然而，现实世界的策略包含许多字段，每个字段都有许多可能的值。例如，（当前）有 $10^{12}$ 个可能的 AWS 账户号和 2 128 个可能的 IPv6 地址。枚举所有可能的请求在计算上是不可行的，即使可行，由此产生的发现项集合也太大而无用。
-    \item 谓词抽象 (Predicate Abstraction): 我们通过使用谓词抽象来解决总结超天文数字级别请求空间的问题。具体来说，我们对策略进行句法分析，提取用于约束访问的常量集合，并使用这些常量生成一系列谓词，这些谓词的合取 (conjunctions) 紧凑地描述了所有请求空间的划分。例如，从图 1 的策略中，我们将提取以下谓词： $p_a \dot{=} \text{SrcVpc} = \text{vpc-a}$ , $p_b \dot{=} \text{SrcVpc} = vpc-b$ , $p_{} \dot{=} \text{SrcVpc} = \lnot(\text{vpc-a} \lor \text{vpc-b})$ (即非 a 或 b) $q 1 \dot{=} \text{OrgId} = \text{o−1}$ ,$ q_2 \dot{=} \text{OrgId} = \text{o−2}$ , $q_{} \dot{=} \text{OrgId} = \lnot (\text{o-1} \lor \text{o-2})$ 第一行有三个谓词描述了请求 SrcVpc 的可能值：等于 vpc-a 或 vpc-b，或者某个不同于 vpc-a 和 vpc-b 的值。类似地，第二行有三个谓词描述了请求 OrgId 的值：等于 o-1 或 o-2，或者某个不同于 o-1 和 o-2 的值。 我们可以通过枚举上述谓词生成的所有“立方体” (cubes, 即谓词组合)，并查询 ZELKOVA 来确定策略是否允许访问该立方体所描述的请求，从而计算发现项。例如，上述谓词将生成图 3 中所示的立方体。我们省略了像 $p_a \land p_b$ 这样明显不一致（对应空请求集）的立方体。在每个立方体旁边，我们显示了查询 ZELKOVA 以确定策略是否允许访问该立方体所描述请求的结果： √（表示允许）或 x（表示拒绝）。最后，我们可以将每个允许的立方体转换为一个发现项，得到五个发现项。 虽然这组发现项是健全和精确的，但它存在两个缺点。首先，现实世界的策略有许多不同的字段，因此，枚举并查询每个立方体可能非常慢。其次，结果不够紧凑。§ 2.1 中的三个发现项更简洁地捕获了相同的信息，例如，它将顶行的三个发现项合并为一个发现项，“SrcVpc 是 vpc-a”。
-    \item 分层抽象 (Stratified Abstraction): 贪婪地枚举所有立方体的主要困难在于，我们最终会急切地根据字段的值进行情况划分，而这可能是不必要的。例如，在图 3 中，即使当 SrcVpc 是 vpc-a 时 OrgId 的值无关紧要，我们仍然根据 OrgId 的可能值划分了情况。这个观察指向了一种新算法，我们按如下方式惰性地生成立方体。我们的算法维护一个包含最小化细化立方体 (minimally refined cubes) 的工作列表 (worklist)。在每一步，我们 (1) 询问 ZELKOVA 该立方体是否允许某个未被其任何细化 (refinements) 覆盖的访问，(2) 如果是，我们将其添加到发现项集合中；(3) 如果不是，我们沿着每个字段的值“逐点” (point-wise) 细化该立方体，并将结果添加到工作列表中。上述过程如图 2 所示。
-    \begin{itemize}
-        \item Level 1 (第 1 层): 工作列表初始化为 $⊤ \land ⊤$ ，它表示我们不关心 SrcVpc 或 OrgId 的值的立方体，即代表所有可能的请求。ZELKOVA 确定此立方体和策略所允许的每次访问都被该立方体的细化之一（树的第二层）所覆盖。因此，这个 $⊤ \land ⊤$ 发现项不是必需的，我们可以找到更精确的发现项。我们用红色阴影和 X 表示这一点。接下来，我们逐点细化上述立方体，考虑两个子立方体 $p_a \land ⊤$ 和 $p_b \land ⊤$ （分别表示 SrcVpc 为 vpc-a 或 vpc-b，OrgId 可以是任何值的请求），以及两个子立方体 $⊤ \land q_1$ 和 $⊤ \land q_2$ （分别表示 OrgId 为 $o-1$ 或 $o-2$，SrcVpc 可以是任何值的请求）。这些细化的立方体被添加到工作列表中，并依次考虑。
-        \item Level 2 (第 2 层): ZELKOVA 确定 $p_a \land ⊤$ 和 $⊤ \land q_2$ 允许的请求中，有些未被其任何细化所覆盖，因此它们被标记为绿色并带有 ✓。然而，ZELKOVA 拒绝了 $p_b \land ⊤$ 和 $⊤ \land q_1$ ，因为它们允许的任何内容都被它们的细化之一所允许。现在我们进一步细化被拒绝的立方体，但可以省略考虑未着色框中的立方体 $p_a \land q_1$ 、$p_{a} \land q_{2}$ 和 $p_b \land q_2$ ，因为它们中的每一个都被两个已接受的立方体之一覆盖或包含 (subsumed)。
-        \item Level 3 (第 3 层): 因此，我们对 $p_b \land q_1$ 发出最后一次 ZELKOVA 查询，它确实允许一个未被其任何细化（因为它没有细化）覆盖的请求。最后，我们收集所有接受的立方体集合，即绿色阴影框中的那些，并将它们转换为 2.1 节中描述的发现项。
-    \end{itemize}
-\end{enumerate}
-
-\begin{center}
-    3 算法
-\end{center}
-
-接下来，我们形式化计算策略摘要的算法，并展示它如何产生健全且精确的发现项。在 4 节中，我们演示了我们的算法如何为现实世界的策略产生紧凑的结果。
-
-\begin{center}
-    3.1 策略和发现项
-\end{center}
-
-\begin{itemize}
-    \item  请求 (Requests): 令 $K = k_1, \dots, k_n$ 为一组键 (keys)。令 $V_k = v_1, \dots$ 为键 $k$ 的一组（可能无限的）值 (values)。一个请求 $r$ 是一个从键 $k$ 到 $V_k$ 中值的映射。例如，请求 $r_1$ 将键 Principal、SrcIP 和 OrgID 映射为： $r_1 = \text{Principal} \to \text{123:user/A}$, $\text{SrcIP} \to 192.0.2.3$, $\text{OrgID} \to \text{o−1}$
-    \item  策略 (Policies): 策略是关于请求的谓词 $p : r \to Bool$ 。策略 $p$ 的指称 (denotation) 是它允许的请求集合：$\gamma(p) \dot{=} \{r | p(r) = True\}$
-    \item 谓词 (Predicates): 谓词是一个映射 $\phi : V_k \to Bool$。谓词的指称是满足该谓词的值的集合：$\gamma(\phi) \dot{=} \{v | \phi(v) = True\}$ 我们在谓词上定义一个偏序关系 (partial order)，$\phi_1 \preceq \phi_2$ 当且仅当 $\gamma(\phi_1) \subseteq \gamma(\phi_2)$ 。例如： $\phi_{123}(v) \dot{=} \text{“v 是账户 123 中的主体”}$，$\phi_{ua}(v) \dot{=} \text{“v 是账户 123 中的 user-a”}$，$\phi_{ub}(v) \dot{=} \text{“v 是账户 123 中的 user-b”}$ 这里我们有 $\phi_{ua} \preceq \phi_{123}$ 和 $\phi_{ub} \preceq \phi_{123}$，因为用户是一种主体。谓词集合必须始终包含 $T$ （全集谓词），并且必须具有以下属性：对于所有 $\phi_1$, $\phi_2$ ，要么 $\phi_1 \preceq \phi_2$ ，要么 $\phi_2 ≤ \phi_1$ ，要么 $\gamma(\phi_1) \cap \gamma(\phi_2) = \emptyset$ 。这确保了给定键的谓词集可以形成树状有序结构。
-    \item  发现项 (Findings): 一个发现项 $\sigma$ 是一个从键 $k$ 到谓词 $\phi_k$ 的映射。发现项 $\sigma$ 的指称是这样一个请求集合：其中每个键 $k$ 都映射到 $\sigma(k)$ 指称中的一个值 $v : \gamma(\sigma) \dot{=} r | \forall k, r(k) \in \gamma(\sigma(k))$。 我们将有限的发现项集合表示为 $\Sigma = \sigma_1, \dots, \sigma_n$。发现项集合的指称是各个发现项指称的并集：$\gamma(\sigma_1, \dots, \sigma_n) \dot{=} \gamma(\sigma_1) \cup \dots \cup \gamma(\sigma_n)$ 
-\end{itemize}
-
-\begin{center}
-    3.2 属性
-\end{center}
-
-接下来，我们形式化发现项的关键期望属性，即健全性、精确性和紧凑性，分别对应为覆盖性、不可约性和最小性。
-
-\begin{itemize}
-    \item  覆盖性 (Coverage): 如果 $\gamma(p) \subseteq \gamma(\Sigma)$，则称发现项集合 $\Sigma$ 覆盖 (covers) 策略 $p$。例如，包含以下两个发现项的集合 $Σ_1 ： Σ_1 = [ SrcVpc \to p_a , OrgID \to ⊤ ]$ , $[ SrcVpc \to ⊤ , OrgID \to q_2 ]$ （对应于图 2 第 2 层的绿色框）不覆盖图 1 中的策略，因为它排除了 SrcVpc 为 vpc-b 且 OrgID 为 o-1 的请求。然而，下面的 $Σ_2$ 确实覆盖了该策略，因为它包含了所有被授予访问权限的请求。$ Σ_2 = Σ_1 \cup [ SrcVpc \to p_b , OrgID \to q_1 ]$
-    \item 不可约性 (Irreducibility): 如果对于每个键 $k$ 都有 $\sigma(k) \preceq \sigma'(k)$ ，则称发现项 $\sigma$ 细化 (refines) 另一个发现项 $\sigma'$ ，记作 $\sigma \sqsubseteq \sigma'$ 。如果 $\sigma$ 细化了 $\Sigma$ 中的某个 $\sigma'$，则称 $\sigma$ 细化发现项集合 $\Sigma$，记作 $\sigma \sqsubseteq \Sigma$。注意 $\sigma \sqsubseteq \sigma'$ 意味着 $\gamma(\sigma) \subseteq \gamma(\sigma')$ 。如果满足以下条件，我们称发现项 $\sigma$ 对于策略 $p$ 是不可约的 (irreducible)：$∃ r ∈ γ ( p ) ∩ γ (σ) . ∀ σ ′ ⊏ σ . r ∉ γ ( σ ′ )$ 即，如果 σ 包含某个被其所有真细化 (proper refinements) 所排除的请求 r ，则 σ 是不可约的。例如，发现项 $[ SrcVpc \to p_a , OrgID \to ⊤ ]$ 是不可约的，因为它包含一个请求 $[ SrcVpc \to vpc-a , OrgID \to o − 3 ]$ ，该请求被其细化 $[ SrcVpc \to p_a , OrgID \to q_1 ]$ 和 $[ SrcVpc \to p_a , OrgID \to q_2 ]$ 所排除。注意，不可约性与可用的谓词集合 Φ 内在相关。
-\end{itemize}
-
-\begin{center}
-    3.3 算法
-\end{center}
-
-给定一个策略 p 和一个有限的偏序谓词集合 Φ ，我们的目标是生成 p 的一个最小覆盖，该覆盖仅由不可约的发现项组成。
-
-\begin{itemize}
-    \item 访问判定程序 (Access Oracle): 我们的算法使用一个访问判定程序，该程序接收策略 p 和发现项 σ 作为输入，当且仅当 σ 描述的某个请求被 p 允许时返回 Some，否则返回 None。 $$\text{CanAccess}(p, \sigma) = \begin{cases} \text{Some} & \text{if } \gamma(\sigma) \cap \gamma(p) \ne \emptyset \\ \text{None} & \text{if } \gamma(\sigma) \cap \gamma(p) = \emptyset \end{cases}$$
-    \item 支配者 (Dominators): 我们定义 ϕ ∈ Φ 的直接支配者集合 (immediately dominates set) 为严格小于 ϕ 但彼此不相关的元素集合： $i d o m ( ϕ ) \dot{=} ϕ' | ϕ' \prec ϕ  and  ∀ ϕ'' . ¬ ( ϕ ′ \prec ϕ ″ \prec ϕ )$
-    \item 缩减发现项 (Reducing a Finding): 过程 ReducePred（相应地，Reduce）接收一个谓词 ϕ （相应地，发现项 σ ）作为输入，并将其强化以排除所有被 ϕ （相应地，$\sigma$）的细化所覆盖的请求：
-    <算法 ReducePred 和 Reduce>
-    直观地说，Reduce 允许我们确定一个发现项是否是不可约的。 引理 1. σ 是不可约的当且仅当 $γ ( Reduce ( σ ) ) ∩ γ ( p ) ≠ \emptyset$。
-    \item 细化发现项 (Refining a Finding): 过程 Refine 接收一个发现项 σ 作为输入，并返回通过单独细化 σ 的一个值可获得的发现项集合。<算法 Refine> 如果一个发现项是可约的 (reducible)，我们将使用 Refine 将其拆分为更精确的发现项。 引理 2. 令 σ 对 p 是可约的。则 $γ ( σ ) ∩ γ ( p ) = γ ( Refine ( σ ) ) ∩ γ ( p )$。
-    \item 总结访问 (Summarizing Access): 过程 AccessSummary（图 4）接收策略 p 作为输入，并返回一个覆盖 p 的最小不可约发现项集合 res。该过程维护一个队列 wkl，包含待探索的发现项前沿。队列初始化为将每个键映射到 ⊤ 的平凡发现项 σ ⊤ 。然后它迭代地从队列中取出一个元素，检查它是否是不可约发现项，如果是，则将其添加到结果集 res 中。如果不是，它计算该发现项的细化，并将那些未被 res 包含的细化添加到 wkl 中（$\sigma' \not\sqsubseteq res$ 行）。该过程重复进行直到队列为空。该算法维护三个循环不变量：(1) wkl ∪ res 覆盖 p ；(2) res 中的每个发现项都是不可约的；(3) res 是最小的。因此，算法终止时得到一个覆盖 p 的最小不可约发现项集合。注意，工作列表是一个队列，这样如果 $σ_1 ⊏ σ_2$ ，算法将先考虑 $σ_2$ 再考虑 $σ_1$ 。
-\end{itemize}
-
-定理 1. 令 $Σ = AccessSummary ( p )$ 。则 (1) Σ 覆盖 p 。(2) Σ 中的每个 σ 都是不可约的。 (3) Σ 是最小的。
-
-\begin{center}
-    4 实现与评估
-\end{center}
-
-AccessSummary 算法在 2019 年 12 月 2 日发布的 IAM Access Analyzer 功能中得以实现 [10]。ZELKOVA 工具 被用作该算法的访问判定程序。Access Analyzer 监控账户中相关的资源策略，并在任何更改时重新运行算法。发现项通过 Web 控制台和 API 呈现给用户。用户可以将代表对资源预期访问的发现项进行归档。对于非预期的发现项，Access Analyzer 会链接到相关的策略，用户可以编辑该策略以移除该访问权限。Access Analyzer 将自动在更改后的策略上运行，任何不再相关的发现项将被设置为已解决状态。通过监控任何现有或新的活动发现项，用户可以确保他们的策略仅授予预期的访问权限。
-
-评估指标: 我们从两个维度评估我们的算法：(1) “算法生成发现项的效率如何？”以及 (2) “生成的发现项在简化策略复杂性方面的效果如何？”。由于我们的算法解决了一个新问题，我们没有外部比较基准。相反，我们将算法与其操作的状态空间进行比较。为此，对于每个策略，我们定义以下度量：
-
-\begin{itemize}
-    \item size：策略所有可能发现项集合的大小。
-    \item findings：算法产生的发现项数量。
-    \item queries：算法进行的 SMT 查询次数。
-    \item runtime：算法的总运行时间。 注意 $f i n d i n g s ≤ q u e r i e s ≤ s i z e$，因为每次查询最多生成一个发现项，并且我们最多对每个可能的发现项查询一次。
-\end{itemize}
-
-基准测试: 我们从一个正在使用的策略语料库中随机选择了 1,387 个策略。由于我们主要关注困难的策略，我们过滤掉了所有 size 小于 10 的策略，剩下 165 个策略。每个策略都在配备 16GB RAM 的 2.5 GHz Intel Core i7 上进行评估。除了一个异常值为 2,267ms 外，所有策略的每个发现项的运行时间 (runtime/findings) 都小于 430ms。这 165 个策略的大小（格式化后的 JSON 行数）从 56 到 810 不等，中位数为 91 行。
-
-结果: 图 5 和图 6 分别显示了发现项数量和查询次数与总搜索空间的比较。两个图都按单调性排序，即 x 轴不同。图 5 显示了发现项简化策略的程度（findings/size 比率），数值越小越好。这个度量总是在 0 和 1 之间，因为 0 < f i n d i n g s ≤ s i z e 。我们看到 85\% 的策略达到了 0.5 或更好的比率，64\% 达到了 0.2 或更好的比率。图 6 显示了算法在探索其状态空间方面的效率（queries/size 比率），数值越小越好。这个度量在 0 和 1 之间，因为 0 ≤ q u e r i e s ≤ s i z e 。该算法仅对 15\% 的策略探索了整个搜索空间，中位比率为 0.22。
-
-\begin{center}
-    5 相关工作
-\end{center}
-
-大多数可用的访问策略分析工具基于日志分析或句法模式匹配，这两种方法都不精确（即未能考虑 AWS 策略中的复杂逻辑）且不健全（即未能检查所有请求），因此可能需要数月才能发现资源易受潜在的非预期访问。
-
-大多数基于形式化方法的工作都集中在通过软件正确性的低级证明来保护云基础设施的各个部分，例如Ironclad。Cloud Contracts 是对网络访问控制列表和路由表的要求。Cloud Contracts 使用 SecGuru 工具进行验证，该工具使用 SMT 的位向量理论比较网络连接策略。相比之下，我们的工作使用一系列 ZELKOVA 查询 来回答关于整个企业级安全态势的更大问题。
-
-Fireman 系统展示了如何使用二元决策图 (Binary Decision Diagrams) 来分析防火墙配置中的访问控制列表 (ACL)。ACL 配置语言比 IAM 更受限制，并且该工具仅限于一组关于允许哪些访问（数据包）的固定查询。
-
-与我们工作最密切相关的是 Margrave 系统，它将防火墙策略编码为命题逻辑公式，然后使用 SAT 求解器来回答有关策略的查询。Margrave 引入了场景发现 (scenario finding) 的概念，并展示了如何生成详尽的场景集来证明被查询的行为。IAM 策略语言要丰富得多，因此枚举场景在计算上是不可行的，这促使我们开发了分层抽象作为总结策略语义的方法，从而为分析师提供对资源可访问性的全面可见性，帮助检测错误配置，并确保更新确实修复了潜在的非预期访问。
+% 外文文献以图片的形式插入，不会发生失真
