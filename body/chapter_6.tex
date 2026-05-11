@@ -1,123 +1,94 @@
-% !Mode:: "TeX:UTF-8" 
+% !Mode:: "TeX:UTF-8"
 
 \BiChapter{实验设计与结果}{}
 
 \BiSection{测试环境}{}
 
+本章实验用于验证 StarPike 在大规模手机直连卫星 NTN 仿真中的有效性。
+实验重点不是评估某一个具体业务应用，而是从系统角度回答三个问题：
+第一，StarPike 是否能够在相同硬件条件下支持比朴素全栈 NTN 软件仿真更大的 UE--gNB 并发规模；
+第二，CEE、PHY-Lite 和 CTE 是否确实降低了重复星历计算、完整 PHY 波形处理和广播复制带来的开销；
+第三，在降低底层开销后，StarPike 是否仍能保持 MAC 及以上层协议行为与高保真参考实现的一致趋势。
+
 \BiSubsection{硬件环境}{}
 
-\begin{itemize}
-    \item CPU：AMD Ryzen 9 7950X 16-Core Processor @ 5.5GHz
-    \item 内存：96GB DDR5 @ 4800MHz
-    \item 硬盘：1TB NVMe SSD @ PCIe 3.0
-\end{itemize}
+实验平台部署在一台 Dell PowerEdge R740 高性能服务器上。
+该服务器配备两颗 Intel Xeon Gold 5222 处理器，每颗处理器包含 4 个物理核心，主频为 3.80 GHz，并开启超线程。
+服务器内存为 256 GB DDR4。
+该硬件平台属于普通机架式服务器，而不是专用无线测试设备或 GPU 集群，因此能够反映 StarPike 在通用服务器条件下支撑大规模 NTN 仿真的能力。
+
+在实验设计中，所有对比方案均运行在同一台服务器上，以避免硬件差异影响结论。
+对于朴素 OAI NTN 全栈仿真、仅启用 CEE 的消融版本、仅启用 PHY-Lite 的消融版本和完整 StarPike，均使用相同 CPU、内存和操作系统环境。
+这样可以将实验差异主要归因于系统架构本身，而不是硬件资源变化。
 
 \BiSubsection{软件环境}{}
 
-\begin{itemize}
-    \item 操作系统：Arch Linux
-    \item 内核版本：Linux 6.14.6-arch1-1
-    \item Java 版本: OpenJDK 24.0.1 2025-04-15
-    \item Z3 版本: 4.13.4
-\end{itemize}
+软件环境基于 Ubuntu 24.04 LTS，Linux 内核版本为 6.8.0，并启用 PREEMPT\_DYNAMIC 以改善软实时任务的调度可预测性。
+实验使用 Docker 构建容器化仿真环境，每个 UE、gNB 和核心网组件可以作为独立容器或进程运行。
+无线接入网侧基于 OpenAirInterface (OAI) NTN 相关实现，核心网侧基于 Open5GS。
+轨道和星历计算由 Skyfield/SGP4 完成，输入轨道数据来自 CelesTrak 发布的 Starlink Direct-to-Cell 相关 TLE 数据。
+
+StarPike 原型在上述软件栈中加入三个核心模块。
+CEE 作为全局星历引擎运行，按照 1 ms 时间粒度持续生成 UE--gNB 对的传播时延、多普勒频移、SNR、Timing Advance、调度偏移、SIB19 兼容字段和可见性状态。
+PHY-Lite 集成在 UE/gNB 的 OAI 执行路径中，通过 nFAPI 类接口向 MAC 层提供 CQI、CRC、随机接入和定时观测等结果。
+CTE 作为集中式流量交换模块运行，根据 CEE 中的全局链路状态维护 UE--gNB 关联，并负责系统信息、测量事件和用户面流量的定向转发。
+
+为了验证协议行为保真度，实验还使用 USRP+srsRAN 组合作为硬件参考。
+该参考平台能够提供更接近真实空口的单链路 PHY 行为，但受限于硬件数量和射频环境，无法扩展到星座级并发规模。
+因此，它主要用于对比 MAC 及以上层关键事件的统计趋势，而不是作为大规模实验的直接基线。
 
 \BiSection{测试指标}{}
 
-\BiSubsection{难度}{}
+本文从可扩展性、运行时开销、协议行为和用户面性能四类指标评估 StarPike。
 
-为了更好地分析一个 IAM 策略的复杂程度，我们引入一个名为难度的度量。对一个 IAM 策略，我们约定：
+第一类指标是时钟漂移。
+本文沿用第三章定义的墙上时间 $t_w$、虚拟时间 $t_v$ 和时钟漂移 $\delta(t)=|t_v-t_w|$。
+在每组实验中，系统运行固定长度的虚拟时间，并记录完成该虚拟时间所需的墙上时间。
+若墙上时间显著超过虚拟时间，说明系统已经无法实时推进，后续协议事件可能受到主机资源不足影响。
 
-\begin{enumerate}
-    \item 对策略中的每一条语句，其难度值为1。
-    \item 如果该语句包含一个通配符 (wildcard)，则其难度值为2。
-    \item 如果该语句包含 $n$ 个通配符 (wildcard)，则其难度值为 $2^n$。
-    \item 这个策略的难度值为所有语句的难度值的加和。
-\end{enumerate}
+第二类指标是资源开销。
+实验记录整体主机 CPU 利用率、单 UE/gNB 实例 CPU 占用、PHY-Lite 内部不同模块的 CPU 分布，以及 CEE 参数生成和共享内存发布的开销。
+该类指标用于判断 StarPike 的扩展性提升来自哪些模块，以及 CEE、PHY-Lite 是否真正降低了重复轨道计算和完整 PHY 波形处理带来的开销。
 
-例如对于策略\ref{policy_file_example}，其难度值为 10。
+第三类指标是 NTN 信令行为。
+实验统计随机接入过程中的 RAR 失败次数、RRC 释放次数、RRC 建链时延、NAS 注册和 PDU 会话建立时间。
+这些指标直接反映 MAC 及以上层协议状态机是否能在 NTN 动态环境中稳定运行。
+如果某个方案虽然吞吐较高但伴随大量 RACH/RRC 失败，则说明其协议时序或接入流程并不可靠。
 
-\BiSubsection{正确性}{}
-
-以 AWS IAM 云服务给出的分析结果为参照，本地形式化验证系统的结果应该与云服务的结果相同。
-
-\BiSubsection{性能}{}
-
-分别记录 AWS IAM 云服务和本地系统在同一组难度递进的策略集上的求解用时，二者应该展现出相似的性能变化趋势。
+第四类指标是用户面性能。
+实验记录下行吞吐、端到端 RTT、RTT 抖动以及在多 UE 场景下的传输稳定性。
+这类指标用于观察时钟漂移和链路动态最终如何影响用户可见性能。
+在手机直连卫星网络中，用户面性能不仅取决于链路预算，还会受到随机接入、调度、重传和核心网路径的共同影响，因此需要与信令指标结合分析。
 
 \BiSection{实验设计}{}
 
-对本地的性能测试，只需直接在代码中加入计时器即可，而对 AWS IAM 服务等计时则要棘手一些。AWS IAM 服务提供了命令行工具 AWS CLI，可以让用户在命令行中上传策略文件，执行分析并得到结果。具体涉及到的命令有：
+实验采用对比实验和消融实验相结合的方式。
+首先，本文设置朴素 OAI Native 作为直接全栈软件仿真基线。
+该方案使用 OAI NTN 和 Open5GS 执行完整协议流程，并保留完整软调制解调和各节点独立星历计算，用于暴露传统全栈软件仿真在规模扩大时的时钟漂移问题。
 
-\begin{lstlisting}[language=Bash, caption={AWS CLI 命令示例}, label={aws_cli}]
-aws s3api put-bucket-policy --bucket <bucket> --policy file://<file_name>
-aws accessanalyzer start-resource-scan \
-    --analyzer-arn <arn> --resource-arn <arn>
-aws accessanalyzer get-analyzed-resource \
-    --analyzer-arn <arn> --resource-arn <arn>
-aws accessanalyzer list-findings --analyzer-arn <arn>
-\end{lstlisting}
+其次，本文设置两个消融版本。
+CEE Only 表示仅启用集中式星历引擎，将轨道传播和 NTN 参数推导从各容器内部移到全局模块，但仍保留原有较重的本地 PHY 执行路径。
+PHY-Lite Only 表示启用轻量 PHY 模型，用 SNR--CQI--BLER 等统计模型替代完整波形处理，但不完全使用 StarPike 的全局状态和集中式交换能力。
+这两个消融版本用于分离 CEE 和 PHY-Lite 对系统开销的贡献。
 
-其中，第一条命令用于将本地的策略文件上传到 AWS IAM 云服务器，第二条命令用于启动分析流程，第三条命令用于获取分析情况，包括最终状态和分析用时等，最后一条命令用于获取分析结果，即所有的发现项。然而，根据 AWS 文档，启动分析流程等命令是异步的，即本地命令行执行该命令后立即结束，而非等待云端等分析结果完成。所以为了获取分析用时，需要解决这个异步的情况。
+完整 StarPike 同时启用 CEE、PHY-Lite 和 CTE。
+在该方案中，星历和链路状态由 CEE 集中生成并通过共享内存发布，PHY-Lite 根据 CEE 参数向 OAI MAC 及以上层注入等价 PHY 观测，CTE 根据全局可见性和服务状态完成关联与流量交换。
+通过与 OAI Native 和消融版本对比，可以判断三个核心模块组合后是否实现了设计目标。
 
-采用轮询的机制来处理异步分析的情况。具体而言，当执行完启动分析命令后，开始周期性地执行获取分析情况的命令（如一秒一次），并对获取到的分析情况进行解析，当其中的状态量为 ACTIVE 时，代表分析已经完成，此时读取其分析用时，即可正确地对 AWS IAM 云服务进行计时。
+实验规模通过逐步增加 UE--gNB 对数进行控制。
+小规模场景用于验证协议流程是否正常运行，较大规模场景用于观察时钟漂移、资源消耗和信令失败是否随规模增长。
+在与第三章摸底实验保持一致的设置中，每组实验至少运行 600 秒虚拟时间，并记录时钟漂移、RAR/RRC 事件、吞吐和 RTT。
+对于 StarPike 的扩展性实验，进一步增加并发 UE--gNB 对数，用于观察系统是否能够在相同硬件条件下支撑数百级实例。
 
-在本地系统上运行测试时，将运行两次。第一次为预热，保证缓存已经被预填充，以避免可能的性能损耗，第二次为正式运行，将记录系统的运行时间。
+协议保真度实验则使用硬件参考和统计对比相结合的方法。
+由于 USRP+srsRAN 难以扩展到大规模星座场景，本文不要求 StarPike 与硬件参考在逐采样或逐符号层面完全一致，而是比较 MAC 及以上层关键事件的统计行为。
+具体包括 RACH 成功概率、RRC 建链时延、HARQ/CRC 成功失败分布、NAS 和 PDU 会话建立时间，以及动态链路预算下吞吐变化趋势。
+如果 StarPike 在这些指标上与硬件参考保持一致趋势，则说明 PHY-Lite 的抽象边界能够满足本文关注的系统级 NTN 研究需求。
 
-\begin{algorithm}[H]
-    \caption{GetFinding \label{get_finding}}
-    \IncMargin{2em}
-    \DontPrintSemicolon
-
-    isActive = $False$ \tcp*{初始化分析状态}
-    \While{$\lnot \text{isActive}$}{
-        current $\gets$ \text{get-analyzed-resource} \tcp*{获取当前分析情况}
-        isActive $\gets$ current.status \tcp*{更新分析状态} 
-    }
-\end{algorithm}
+此外，实验还关注 StarPike 支撑星座级研究场景的能力。
+典型场景包括多 UE 并发 TCP 传输、低轨卫星运动引起的 RTT 膨胀和重传突发，以及不同 RAN 功能拆分方式在低轨馈电链路约束下的差异。
+这些场景并不要求本节立即给出完整结果，但它们定义了 StarPike 相比单链路测试床和传统网络模拟器的实验使用边界：系统需要同时保留 NTN 接入层协议状态机和星座级动态。
 
 \BiSection{实验结果}{}
 
-\BiSubsection{正确性}{}
-
-经验证，本地形式化验证系统得出的分析结果和 AWS IAM 云服务得出的完全相同，证明本系统的实现是正确的。
-
-\BiSubsection{性能}{}
-
-随机构建的 15 个策略的运行情况如下：
-\begin{table}[H]
-	\renewcommand{\arraystretch}{1.2}
-	\centering\wuhao
-	\caption{求解性能量表} \label{tab_ch2} \vspace{2mm}
-	\begin{tabularx}{\textwidth} { 
-   >{\centering\arraybackslash}X 
-   >{\centering\arraybackslash}X 
-   >{\centering\arraybackslash}X 
-   >{\centering\arraybackslash}X }
-	\toprule[1.5pt]
-		序号 & 难度 & AWS IAM 云用时(s) & 本地系统用时(ms) \\
-	\midrule[1pt]
-		1 & 8 & 11 & 31 \\
-		2 & 16 & 17 & 425 \\
-		3 & 24 & 19 & 1908 \\
-        4 & 32 & 29 & 2906 \\
-        5 & 40 & 63 & 6562 \\
-        6 & 48 & 101 & 11122 \\
-        7 & 56 & 159 & 18364 \\
-        8 & 64 & 245 & 27498 \\
-        9 & 72 & 393 & 46155 \\
-        10 & 80 & 567 & 69846 \\
-        11 & 88 & 769 & 内存不足 \\
-        12-15 & 96-120 & 求解失败 & 内存不足 \\
-	\bottomrule[1.5pt]
-	\end{tabularx}
-\end{table}
-
-绘制性能变化趋势图如下：
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{scalability05}
-\caption{求解性能变化趋势图} \label{performance}
-\end{figure}
-
-观察发现，本地系统求解性能变化趋势与 AWS IAM 云服务求解性能变化趋势基本一致，但是本地系统变化趋势的常系数项更大，这是因为本地系统的硬件性能不如 AWS IAM 云计算中心导致的。
+TODO(bxhu)

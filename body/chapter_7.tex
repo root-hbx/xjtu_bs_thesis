@@ -1,60 +1,60 @@
-% !Mode:: "TeX:UTF-8" 
+% !Mode:: "TeX:UTF-8"
 
 \BiChapter{结论与展望}{}
 
 \BiSection{论文工作总结}{}
 
-本文设计并实现了基于 SMT 理论的形式化验证系统，并与云验证系统对比，得到了正确的结果和相似的性能变化特性。形式化验证系统提供了包括验证策略有效性、分析策略并给出分析结果的功能。具体而言，本文：
+本文围绕大规模手机直连卫星 NTN 仿真中的时钟漂移问题展开研究，提出并实现了 StarPike 系统。
+随着低轨卫星星座和 3GPP NTN 技术的发展，手机直连卫星网络已经从单链路验证走向星座级部署。
+然而，现有硬件测试床和传统蜂窝软件协议栈通常只能支持单链路或小规模实验；若直接将 Skyfield/TLE 轨道计算、OAI NTN 和 Open5GS 进行朴素组合，
+系统会在 UE--gNB 对数增加后迅速出现资源耗尽、虚拟时间滞后和协议行为失真。
+进一步分析表明，问题根源主要来自三个方面：每个节点重复进行星历和链路状态计算，完整 PHY 波形处理占据大部分 CPU 开销，以及软件容器中直接复制无线广播语义导致通信放大。
 
-\begin{enumerate}[wide, label=\arabic*),  labelindent=21pt]
-    \item 详细调研了 IAM 及形式化 IAM 验证的相关技术，研究对比了各种 IAM 求解方式，最终选定以基于 SMT 理论的形式化求解为主要研究方向
-    \item 基于 Z3 求解器，设计了一套将 IAM 策略语言编码为 SMT 表达式的方案，并扩展 Z3 为 Z3 自动机，以支持对包含正则表达式的 IAM 策略进行编码
-    \item 在 Z3 自动机的基础上，进一步设计复现了 AWS 的分层抽象 (Stratified Abstraction)\cite{Stratified}，并讨论了该算法存在的问题以及可能的性能改进
-    \item 针对 AWS 提供的异步验证 API, 设计并实现了一套轮询监测的实验流程，用以对比本文的实现方案和 AWS 私有实现方案的正确性和性能
-\end{enumerate}
+基于上述观察，本文设计了 StarPike 的三部分架构。
+\begin{itemize}
+    \item 集中式星历引擎 CEE 统一生成毫秒级 UE--gNB 链路参数，避免各容器重复计算轨道和 NTN 状态。
+    \item PHY-Lite 在 nFAPI/F1 等标准边界上替代完整波形级 PHY 执行，用 SNR--CQI--BLER 等轻量模型生成 MAC 及以上层需要的信道质量、解码结果和定时观测。
+    \item 集中式流量交换模块 CTE 利用全局可见性和服务状态，将主机内部广播复制转化为定向递送和按关联关系转发。
+\end{itemize}
+
+三者共同降低底层冗余开销，使 OAI/Open5GS 中的 RRC、NAS、MAC、RLC、PDCP 和核心网流程能够在更大规模下按真实时间推进。
+
+在实现层面，本文完成了 StarPike 原型系统，包括 CEE 参数生成、共享内存环形缓冲区、seqlock 同步、PHY-Lite 与 OAI 接口适配、CTE 关联和转发逻辑，以及容器化实验运行流程。
+实验设计部分进一步明确了系统评估方法，包括硬件环境、软件环境、测试指标、基线和消融方案。
+总体而言，本文工作为大规模手机直连卫星 NTN 接入层实验提供了一个可扩展的软件仿真基座，使研究者能够在普通服务器上观察随机接入、RRC/NAS 建链、用户面传输和功能拆分等星座级现象。
+
+\BiSection{系统实现局限性讨论}{}
+
+StarPike 的核心取舍是保留 MAC 及以上层协议状态机，同时用轻量模型替代完整物理层波形处理。
+这一取舍适合本文关注的大规模 NTN 接入层研究，但也带来明确局限。
+首先，PHY-Lite 不模拟射频前端、精细信道估计、编码器实现细节、逐符号干扰和硬件非理想性。
+因此，对于需要研究物理层算法、射频链路质量或具体硬件实现误差的问题，StarPike 不能替代 USRP、商用信道模拟器或 Rohde \& Schwarz、Amarisoft 等高保真测试平台。
+
+其次，当前 StarPike 主要聚焦无线接入侧协议行为。
+系统能够建模低轨运动导致的传播时延、多普勒、Timing Advance、链路质量变化和接入层状态迁移，但尚未完整覆盖星间链路、星上路由收敛、跨卫星路径重配置和端到端星座网络控制。
+换言之，StarPike 补足的是现有星座网络平台较少涉及的 3GPP NTN RAN 层实验能力，而不是替代 Hypatia、StarryNet、OpenSN 等面向星座拓扑和 IP 层路由的平台。
+
+最后，StarPike 的模型精度依赖 CEE 和 PHY-Lite 中的参数校准。
+SNR--CQI--BLER 映射、链路预算参数、可见性门限、随机接入成功概率和移动性策略都会影响实验结果。
+如果这些参数与目标系统偏差较大，仿真结果也会受到影响。
+因此，在将 StarPike 用于具体协议或系统设计结论前，需要结合硬件测试床、链路级仿真或公开测量数据对关键模型进行校准。
 
 \BiSection{未来工作展望}{}
 
-\BiSubsection{算法设计优化}{}
+后续工作首先可以扩展 StarPike 与星座网络仿真平台的联动能力。
+现有 StarryNet、OpenSN 等平台能够研究星间链路、卫星路由和星座拓扑变化，而 StarPike 能够运行 3GPP NTN 接入层协议。
+将二者结合后，可以进一步研究接入层事件与星上网络之间的相互影响，例如波束移动导致的集中切换如何影响星间路由，链路质量变化如何触发路径重收敛，以及多 UE 传输如何与星座瓶颈链路产生耦合。
 
-对一个策略 $p$ 和由算法\ref{access_summary}得出的分析结果 $\Sigma$，尽管\ref{partial_predicate}保证了如下性质：
-\begin{equation}
-\begin{aligned}
-\forall \sigma_1, \sigma_2 \in \Sigma, \sigma_1 \not= \sigma_2, \sigma_1 \not\preceq \sigma_2 \land \sigma_2 \not\preceq \sigma_1
-\end{aligned}
-\end{equation}
+其次，可以将 StarPike 扩展到更完整的星上移动网络功能部署研究。
+本文已经讨论了 CU/DU 功能拆分和 O-RAN 场景的实验需求，但当前系统仍主要围绕 RAN 侧执行模型展开。
+未来可以进一步考虑 AMF、SMF、UPF 等核心网功能的星上部署、地面部署或混合部署，研究核心网状态管理、会话连续性、馈电链路带宽和星地时延之间的权衡。
+这对于再生载荷和星上核心网方向具有重要意义。
 
-即分析结果是最简明的。但这还不够简明。考察分析结果中的 3 个发现：$\sigma_1, \sigma_2, \sigma_3$，尽管算法能保证这三者之间互不满足偏序关系，但可能存在以下情况：
-\begin{equation}\label{joined_overlap}
-\exists \sigma_1, \sigma_2, \sigma_3 \in \Sigma, \sigma_3 \preceq (\sigma_1 \lor \sigma_2)
-\end{equation}
+第三，可以提高 PHY-Lite 的模型细粒度和可配置性。
+未来版本可以引入更丰富的链路级校准数据、不同调制编码方式下的 BLER 曲线、波束赋形模型、干扰模型和 UE 能力差异，使 StarPike 在保持可扩展性的同时覆盖更多 NTN 物理层影响。
+同时，也可以支持按实验需求选择不同保真度层级：在大规模背景流量中使用轻量模型，在少量关键链路上启用更高保真 PHY 或硬件在环验证。
 
-即发现 $\sigma_3$ 可能是发现 $\sigma_1$ 和 $\sigma_2$ 的并集的子集，尽管三者各自不满足偏序关系。这样会导致最终的发现结果有冗余项 $\sigma_3$，因为它描述的允许域完全被 $\sigma_1 \lor \sigma_2$ 覆盖。
-
-这个问题的来源在于细化操作。在算法\ref{refine_finding}中，仅简单地将当前谓词的直接前驱元素分配给细化发现，而忽视了谓词之间就可能存在形如公式\ref{joined_overlap}的偏序关系。即可能存在：
-\begin{equation}
-\exists \phi_1, \phi_2, \phi_3 \in \text{idom}(\phi), \phi_3 \preceq (\phi_1 \lor \phi_2)
-\end{equation}
-
-要解决这个问题，可以在得到一个谓词的直接前驱元素集后再增加一步操作，将这个集合分解成\textbf{互斥}的子集。例如对于 $\text{idom}(\phi) = \{\phi_1, \phi_2, \phi_3\}$ 的情况，可以将其分解为：
-\begin{equation}
-\begin{aligned}
-\{
-\phi_1 &\land \lnot (\phi_2 \lor \phi_3), \\
-\phi_2 &\land \lnot (\phi_1 \lor \phi_3), \\
-\phi_3 &\land \lnot (\phi_1 \lor \phi_2), \\
-\phi_1 &\land \phi_2 \land \lnot \phi_3, \\
-\phi_1 &\land \phi_3 \land \lnot \phi_2, \\
-\phi_2 &\land \phi_3 \land \lnot \phi_1, \\
-\phi_1 &\land \phi_2 \land \phi_3
-\}
-\end{aligned}
-\end{equation}
-
-即可解决该问题。
-
-\BiSubsection{系统实现优化}{}
-
-本文实现的形式化验证系统对值的类型支持较少，不支持位向量、范围值等，因而难以处理诸如 IP 地址、时间范围等键的验证。
-
-本地的形式化验证系统的内存占用随着策略难度的增加而剧烈地增加，而且算法\ref{refine_finding}、\ref{reduce_finding}、\ref{kv_relation}的时间复杂度都非常高。在系统实现过程中，可以尝试通过引入缓存等机制来缓解高时间复杂度带来的计算压力，也可以通过优化实现方式来减少内存的占用。
+最后，StarPike 还可以进一步完善实验自动化和可复现能力。
+例如，建立标准化场景库，覆盖密集 UE 接入、波束扫过、切换风暴、拥塞控制、O-RAN 功能拆分和星上核心网部署等场景；
+同时提供统一日志、指标收集和结果分析工具。
+这些工作将使 StarPike 不仅作为本文的原型系统，也能成为后续手机直连卫星 NTN 研究中的可复现实验平台。

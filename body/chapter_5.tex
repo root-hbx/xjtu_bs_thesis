@@ -1,245 +1,211 @@
-% !Mode:: "TeX:UTF-8" 
+% !Mode:: "TeX:UTF-8"
 
-\BiChapter{形式化验证系统的实现}{}
+\BiChapter{StarPike 系统实现}{}
 
-本章将介绍基于 Java 和 Z3 的 SMT 编码器以及分层抽象算法的具体实现。首先介绍系统的整体设计和各个关键组件之间的交互逻辑。然后分别介绍各个组件的实现方式，包括反序列化器，编码器，策略类，关系图谱和发现类的具体实现，最后给出了对真实策略文件的验证方式。
+\BiSection{原型系统概述}{}
 
-\BiSection{总体实现}{}
+本章介绍 StarPike 原型系统的具体实现。
+与第四章的设计描述不同，本章关注各模块如何落地到可运行的软件系统中，包括实验配置读取、星历参数生成、共享内存同步、PHY-Lite 与 OAI 的接口适配、CTE 的流量交换，以及容器化运行流程。
+原型系统的实现目标是尽量复用现有开源蜂窝协议栈，在最小化改动 MAC 及以上层代码的前提下，将高开销的重复计算和广播复制移出节点内部。
 
-形式化验证系统主要又如下几个关键组件构成：
+StarPike 原型由四类进程组成。
+第一类是全局控制进程，包括 CEE 和 CTE。
+CEE 负责读取星座、UE、gNB 和实验时间配置，持续生成毫秒级 NTN 参数；CTE 负责根据 CEE 状态维护 UE--gNB 关联关系，并转发控制面和用户面流量。
+第二类是 RAN 进程，包括经过 PHY-Lite 适配的 UE 和 gNB 实例。
+第三类是核心网进程，主要复用 Open5GS 中的 AMF、SMF、UPF 等组件。
+第四类是实验管理脚本，用于创建容器、分配网络命名空间、写入配置文件和启动各模块。
 
-\begin{itemize}
-    \item 反序列化器：将提供的 JSON 文件解析为可供编码器进行编码等策略类，包括处理单值、空值、改写通配符 (wildcard) 为标准正则表达式语法等。
-    \item 策略类：IAM 策略的存储形式，实现了包括偏序性在内的诸多前文提到等性质。
-    \item 编码器：提供 SMT 编码和求解等能力，可以将策略类和发现类编码成相应的 SMT 表达式，并基于这些表达式进行若干运算。
-    \item 关系图谱：从策略类构建，描述了策略类中所有谓词的偏序关系，用于执行分层抽象算法。
-    \item 发现类：描述分层抽象算法产生的结果，具有与策略类相似等性质。
-\end{itemize}
+在部署方式上，每个 UE 和 gNB 仍然可以作为独立容器或进程运行，从而保留接近真实系统的协议栈隔离和日志观测方式。
+与朴素全栈仿真不同，容器内部不再独立完成完整星历推导和波形级 PHY 处理，而是通过共享内存读取 CEE 发布的当前时隙参数，并通过 PHY-Lite 将这些参数转化为 nFAPI 侧事件。
+这样，StarPike 在外部运行形态上仍然类似一个多节点 NTN 实验平台，但内部计算路径已经被重新组织。
 
-系统运行时各个组件之间的交互如下：
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{overview.pdf}
-\caption{系统组件交互示意图} \label{overview}
-\end{figure}
+\BiSection{集中式星历引擎实现}{}
 
-具体而言，系统的运行流程如下：
+CEE 的实现可以分为配置解析、轨道传播、链路预算、NTN 参数生成和共享内存发布五个步骤。
+配置解析阶段读取卫星 TLE、gNB 载荷标识、UE 地理位置、实验起始时间、仿真持续时间和链路预算参数。
+轨道传播阶段基于 SGP4 计算每颗卫星在每个时间点的位置和速度。
+链路预算阶段根据卫星与 UE 的几何关系计算斜距、仰角、传播损耗和接收信噪比。
+NTN 参数生成阶段进一步推导传播时延、多普勒频移、Timing Advance、调度偏移和 SIB19 兼容字段。
+最后，共享内存发布阶段将每个 UE--gNB 对的参数向量写入环形缓冲区，供 UE、gNB、PHY-Lite 和 CTE 读取。
 
-\begin{enumerate}
-    \item 系统用户在搭建好的验证平台上，上传需要验证的 IAM 策略文件，然后调用形式化验证器进行检验。
-    \item 系统收到用户传入的 IAM 策略文件，使用反序列化器将其转化为策略类以供其他组件使用。
-    \item 系统首先调用 SMT 编码器检查 IAM 策略文件是否有允许域，如果没有则直接返回。如果有则开始分层抽象算法流程。
-    \item 分层算法流程开始，系统首先识别出策略类中所有的谓词关系。
-    \item 识别出谓词关系后，系统调用 SMT 求解器两两计算偏序关系，并将计算结果加入关系图谱中。
-    \item 由关系图谱计算出每个谓词的直接前驱，并加入到关系图谱中。
-    \item 依关系图谱，调用 SMT 编码器运行算法\ref{access_summary}，得到该策略的发现集。
-\end{enumerate}
-
-\BiSection{反序列化器}{}
-
-Java 中有许多常用的 JSON 处理库：
-
-\begin{enumerate}
-    \item Jackson。Jackson 是一个功能强大、特性丰富且高度流行等 Java 数据处理工具套件，不仅局限于 JSON。其核心模块包括 jackson-core, jackson-annotations 和 jackson-databind。这种模块化的设计允许开发者按需引入，减少不必要的依赖。Jackson 的主要优势在于其高性能、广泛的定制能力、全面的功能集以及庞大的社区支持。
-    \item Gson。Gson 是 Google 开发的一个 Java 库，旨在提供易用且性能良好的 Java 泛型支持。Gson 的主要优势在其简洁的 API 和对泛型的强大处理能力。
-    \item JSON.simple。JSOM.simple 是一个设计简洁的 Java 工具包，用于 JSON 文本的编解码。它以轻量级、类数量少和通常没有外部依赖而著称。
-\end{enumerate}
-
-从解析速度和内存占用两个方面考虑，Jackson 在处理大型文件时性能最佳，JSON.simple 次之，Gson 最为吃力；在内存占用方面，Jackson 具备最好的内存效率，因为它可以使用流式 API，增量地处理 JSON 文件而无需全部加载到内存中，Gson 虽然也提供了流式 API，但其对反射的依赖会带来一定程度的内存开销，JSON.simple 则直接将整个 JSON 文件加载到内存中，非常不适合处理大型文件。经过比较，最终决定选用 Jackson 作为 JSON 处理库。
-
-反序列化器的主要功能包括：单值、空值处理，改写通配符 (wildcard) 为标准正则表达式语法。
-
-\textbf{单值、空值处理}。用户在配置文件中可能会存在缺省项，反序列化器需要识别这一点，并补上一个空集作为策略类中等对应值；而对于单值，则需要将其转化为一个只有一个元素等集合。
-
-\textbf{改写通配符}。AWS IAM 策略文件语法中仅支持 *、? 两种通配符 (wildcard)，而与标准等正则表达式语法不同，因此需要反序列化器实时改写。一般地，* 代表匹配任意数量的任意字符，所以需要等价改写为正则表达式语法中的 .*，? 代表匹配任意字符一次，所以需要等价改写为正则表达式语法中的 .。在改写完成后，可能需要对改写的表达式进行进一步化简。考察两种通配符相连的情况，对 *?，改写结果是 .*.，可以简化为 .+，即匹配任意字符一次或多次，对 ?* 对简化同理。以下是一个改写示例：
-\begin{equation*}
-\text{str} = \text{a*b*c*d*?e?*f*} \to \text{r} = \text{a.*b.*c.*d.+e.+f.*}
-\end{equation*}
-
-\BiSection{策略类}{}
-
-依照 AWS IAM 策略文件的语法，策略类应该包含版本和陈述两个字段，而陈述又应该包含主体、行为、资源、条件四个字段，因而策略类是一个嵌套类。由面向对象编程思想，策略类应该有一个自编码的方法 $.encode()$，可以调用 SMT 编码器将自身编码为 SMT 表达式。而考虑到策略类是嵌套的，所以其嵌套类应该都有对应的方法，上级类只要调用下级类的自编码方法进行处理即可。于是可以给出以下各个类的定义：
-
-\begin{lstlisting}[language=Java, caption={策略类定义}, label={java_policy}]
-public class Policy {
-    String version;
-    List<Statement> statements;
-}
-
-public class Statement {
-    Map<VarKey, Set<String>> principals;
-    Set<String> actions;
-    Set<String> resources;
-    Set<Condition> conditions;
-}
-
-public class Condition {
-    VarOperator operator;
-    VarKey key;
-    Set<String> values;
-}
-\end{lstlisting}
-
-其中，VarKey 是用于限定键的种类的枚举类型，VarOperator 是用于限定运算符种类的枚举类型。对条件 (Condition)，由公式\ref{condition_encoding}给出其自编码方法，对陈述 (Statement)，由公式\ref{statement_encoding}给出其自编码方法，对策略 (Policy)，由公式\ref{general_encoding}给出其自编码方法。
-
-\BiSection{编码器}{}
-
-\BiSubsection{Z3 自动机}{}
-
-Z3 使用上下文 (Context) 来管理所有 SMT 表达式和变量相关等操作，因此可以继承上下文类来创建一个 Z3 自动机类，以添加对正则表达式等支持。总体而言， Z3 自动机需要添加两个功能：从字符串正则表达式构建 SMT 语言的正则表达式，添加正则表达式等匹配操作。具体而言：
-
-\begin{lstlisting}[language=Java, caption={Z3 自动机}, label={z3automata}]
-public class Z3Automata extends Context {
-    public Z3Automata() {
-        super();
-    }
-    public BoolExpr mkReMatch(Expr<SeqSort<CharSort>> target, String regex) {
-        // 正则表达式匹配操作
-        return mkInRe(target, mkRegex(regex)); // mkInRe 是内置函数
-    }
-    public ReExpr<SeqSort<CharSort>> mkRegex(String regex);
-}
-\end{lstlisting}
-
-其中，mkRegex 函数的实现按照算法\ref{build_regex_algo}。
-
-\BiSubsection{上下文管理}{}
-
-受限于 Z3 特性，系统的整个运行流程都必须在同一个 Z3 上下文中运行。考虑到这个特性，可以使用 Java 单例来管理 Z3 上下文：
-
-\begin{lstlisting}[language=Java, caption={Z3 单例管理器}, label={automan}]
-public final class AutoMan {
-    private static final Z3Automata automata = new Z3Automata();
-    private AutoMan() {} // 私有构造函数防止外部实例化
-    public static Z3Automata get() {
-        return AutoMan.automata;
-    }
-}
-\end{lstlisting}
-
-\BiSubsection{功能特性}{}
-
-编码器需要实现的功能有：
-
-\begin{itemize}
-    \item 基本逻辑运算，包括与或非
-    \item 偏序性 ($\preceq$) 检查
-    \item 严格偏序性 ($\prec$) 检查
-    \item 可满足性检查
-\end{itemize}
-
-基本的逻辑运算 Z3 已经内置了支持。对于偏序性和严格偏序性，按公式\ref{partial_predicate}，有：
-\begin{equation}
-\begin{aligned}
-\phi_1 \preceq \phi_2 \iff \gamma(\phi_1) &\subseteq \gamma(\phi_2) \\
-                      \iff \gamma(\phi_1) &\cap \overline{\gamma(\phi_2)} = \emptyset \\
-\phi_1 \prec \phi_2   \iff \gamma(\phi_1) &\subset \gamma(\phi_2) \\
-                      \iff \gamma(\phi_1) &\cap \overline{\gamma(\phi_2)} = \emptyset \\
-                      \land \gamma(\phi_2) &\cap \overline{\gamma(\phi_1)} \not= \emptyset
-\end{aligned}
-\end{equation}
-
-而可满足性检查只需调用 Z3 求解器对表达式进行求解即可。于是有：
-
-\begin{lstlisting}[language=Java, caption={SMT 编码器}, label={encoded_api}]
-public interface EncodedAPI {
-    public static BoolExpr and(BoolExpr... exprs) {
-        return AutoMan.get().mkAnd(exprs);
-    }
-    public static BoolExpr or(BoolExpr... exprs) {
-        return AutoMan.get().mkOr(exprs);
-    }
-    public static BoolExpr not(BoolExpr expr) {
-        return AutoMan.get().mkNot(expr);
-    }
-    public static Boolean greaterEquals(BoolExpr lhs, BoolExpr rhs) {
-        return !check(not(lhs), rhs);
-    }
-    public static Boolean greaterThan(BoolExpr lhs, BoolExpr rhs) {
-        return check(and(lhs, not(rhs))) && !check(and(not(lhs), rhs));
-    }
-    public static Boolean check(BoolExpr... exprs) {
-        Solver solver = AutoMan.get().mkSolver();
-        solver.add(exprs);
-        return solver.check() == Status.SATISFIABLE;
-    }
-}
-\end{lstlisting}
-
-值得注意的是，此处我们采用接口类加静态方法的格式，是为了保证兼容性和可移植性。这样如果以后想要添加具体的类实现对原有代码等改动会比较小。
-
-\BiSection{关系图谱}{}
-
-关系图谱被用来识别并整理一个策略中所有谓词的偏序关系。对于每一个键 $k$ 的每一个谓词 $\phi_{ki}$，系统首先在 SMT 编码器的帮助下识别出其所有的前驱，并构建一个前驱映射表 $R = \{(\phi_k, \Phi) | \forall \phi' \in \Phi, \phi' \prec \phi_k\}$。接着基于前驱映射表 $R$，按照公式\ref{idom}的描述构建直接前驱映射表 $I = \{(\phi_k, \text{idom}(\phi_k)\}$。具体实现较为复杂，此处仅给出算法描述：
-
-\begin{algorithm}[H]
-    \caption{KvRelation \label{kv_relation}}
-    \IncMargin{2em}
-    \DontPrintSemicolon
-    \KwIn{Policy $p$}
-    \KwOut{Idom map $m$}
-
-    relations $\gets \emptyset$ \tcp*{初始化前驱映射表}
-    idoms $\gets \emptyset$ \tcp*{初始化直接前驱映射表}
-    \For{$k \in K$}{
-        \For{$\phi_i, \phi_j \in \Phi_k \times \Phi_k$}{
-            \If{$\phi_j \prec \phi_i$}{
-                relations($k$).add($\phi_i$, $\phi_j$) \tcp*{将一个偏序对加入前驱映射表中}
-            }
-        }
-    }
-
-    \For{$k \in K$}{
-        \For{$\phi \in \text{relations}(k)$}{
-            \For{$\phi' \in \text{relations}(k)(\phi)$}{
-                \If{$\not\exists \phi'' \in \text{relations}(k)(\phi), \phi' \prec \phi'' \prec \phi$}{
-                    idom($k$).add($\phi$, $\phi'$) \tcp*{将一个满足要求的偏序对加入直接前驱映射表中}
-                }
-            }
-        }
-    }
-
-    \Return idoms
-\end{algorithm}
-
-算法\ref{kv_relation}执行完成后，只需调用 $\text{idoms}(k)(\phi)$ 即可获得键 $k$ 下谓词 $\phi$ 的所有直接前驱谓词。
-
-\BiSection{发现类}{}
-
-根据定义\ref{def_finding}，发现是一些肯定性的语句的集合。所以一个发现类可以被定义为一个键值对映射。相应地，发现类也具有与策略类类似的自编码方法 $.encode()$。除此之外，发现类还应具有 $.reduce()$ 和 $.refine()$ 两个方法，分别对应算法\ref{reduce_finding} 和算法 \ref{refine_finding}。
-
-\begin{lstlisting}
-public class SmtFinding {
-    Map<VarKey, Set<String>> finding;
-}
-\end{lstlisting}
-
-\BiSection{代码统计}{}
-
-经统计，截至 commit hash 71bc89431da128e3cab464f70ed3e1d77ef32fad, 本系统的代码量统计如下表：
+CEE 在每个毫秒级时隙 $t_k$ 为每个 UE $u_i$ 与 gNB $g_j$ 生成参数向量 $\vec{p}_{ij}(t_k)$。
+表\ref{tab_cee_fields} 给出了原型系统中主要字段及其用途。
 
 \begin{table}[H]
-	\renewcommand{\arraystretch}{1.2}
-	\centering\wuhao
-	\caption{代码统计表} \label{tab_ch2} \vspace{2mm}
-	\begin{tabularx}{\textwidth} { 
-   >{\centering\arraybackslash}X 
-   >{\centering\arraybackslash}X 
-   >{\centering\arraybackslash}X 
-   >{\centering\arraybackslash}X
-   >{\centering\arraybackslash}X
-   >{\centering\arraybackslash}X}
-	\toprule[1.5pt]
-		语言 & 文件数 & 总行数 & 纯代码行数 & 注释行数 & 空行数 \\
-	\midrule[1pt]
-		Java & 27 & 2157 & 1629 & 207 & 321 \\
-		Python & 1 & 33 & 23 & 4 & 6 \\
-		XML & 1 & 137 & 107 & 15 & 15 \\
-        JSON & 79 & 26512 & 26512 & 0 & 0 \\
-        Markdown & 1 & 46 & 0 & 27 & 19 \\
-        Bash & 1 & 11 & 11 & 0 & 0 \\
-    \midrule[0.5pt]
-        合计 & 109 & 28885 & 28271 & 253 & 361 \\
-	\bottomrule[1.5pt]
-	\end{tabularx}
+    \renewcommand{\arraystretch}{1.2}
+    \centering\wuhao
+    \caption{CEE 每对 UE--gNB 参数向量的主要字段} \label{tab_cee_fields} \vspace{2mm}
+    \begin{tabularx}{\textwidth} {
+        >{\centering\arraybackslash}p{0.18\textwidth}
+        >{\centering\arraybackslash}p{0.24\textwidth}
+        >{\centering\arraybackslash}X
+    }
+    \toprule[1.5pt]
+        字段 & 含义 & 主要消费者 \\
+    \midrule[1pt]
+        $\tau_{ij}$ & 单向传播时延 & MAC/RRC 定时、RTT 分析 \\
+        $f_{ij}$ & 多普勒频移 & PHY-Lite、NTN 频率补偿 \\
+        $d_{ij}$ & 卫星与 UE 斜距 & 链路预算、可视化与诊断 \\
+        $\theta_{ij}$ & 仰角或指向角 & 可见性判断、关联选择 \\
+        $SNR_{ij}$ & 信噪比 & CQI 映射、BLER 查询 \\
+        $TA_{ij}$ & Timing Advance & 随机接入、上行定时补偿 \\
+        $K_{ij}$ & NTN 调度偏移 & MAC/RRC 调度流程 \\
+        $E_{ij}$ & SIB19 兼容星历字段 & 系统消息生成 \\
+        $v_{ij}$ & 可见性标志 & CTE 关联、测量分发 \\
+        $h_{ij}$ & 服务或切换状态 & CTE 转发、移动性过程 \\
+    \bottomrule[1.5pt]
+    \end{tabularx}
 \end{table}
+
+为了避免各节点读取到不同时间轴上的状态，CEE 使用统一的墙上时间作为全局推进基准。
+系统启动时，CEE 记录实验起始墙上时间 $T_0$，并将第 $k$ 个时隙映射为 $T_0+k$ ms。
+在运行过程中，CEE 始终按照墙上时间推进写指针，而不是等待某个慢速容器读取完成。
+这一选择与 StarPike 的设计目标一致：相较于让全局时间被个别滞后节点拖慢，保持整体时间轴稳定对 NTN 协议实验更重要。
+
+\BiSection{共享内存环形缓冲区}{}
+
+CEE 需要向大量 UE/gNB 进程高频发布参数。
+如果使用套接字逐节点发送，会产生大量系统调用和消息复制；如果使用文件轮询，则无法满足毫秒级更新需求。
+因此，StarPike 原型使用 POSIX 共享内存实现单写多读的环形缓冲区。
+CEE 是唯一写者，所有 UE、gNB、PHY-Lite 和 CTE 模块都是读者。
+
+环形缓冲区按照“时隙编号 + UE--gNB 对编号”索引。
+每个槽位保存一个参数向量和一个序列计数器。
+CEE 写入某个槽位时，先将序列计数器设置为奇数，表示该槽位正在更新；写入完整参数向量后，再将计数器设置为偶数，表示该槽位可被一致读取。
+读者读取时，先读取一次计数器，再复制参数向量，最后再次读取计数器。
+只有当两次计数器相同且为偶数时，读者才接受该结果；否则重新读取。
+这一 seqlock 风格的同步方式适合 StarPike 的访问模式，因为写者只有一个，而读者很多，且读者偶发重试的代价远低于全局加锁阻塞。
+
+\begin{algorithm}[H]
+    \caption{CEE 参数发布与节点读取流程}
+    \KwIn{实验配置、当前墙上时间、环形缓冲区}
+    \KwOut{每个 UE--gNB 对在当前时隙的 NTN 参数}
+    \ForEach{time slot $t_k$ in lookahead window}{
+        \ForEach{UE--gNB pair $(u_i,g_j)$}{
+            compute $\vec{p}_{ij}(t_k)$ from orbit and link model\;
+            set slot sequence to odd\;
+            write $\vec{p}_{ij}(t_k)$ into shared memory\;
+            set slot sequence to even\;
+        }
+    }
+    \ForEach{reader request at slot $t_k$}{
+        read sequence $s_1$\;
+        copy parameter vector $\vec{p}_{ij}(t_k)$\;
+        read sequence $s_2$\;
+        accept the vector if $s_1=s_2$ and $s_1$ is even\;
+    }
+\end{algorithm}
+
+CEE 还维护一个前瞻窗口 $W$。
+在墙上时间到达 $t_k$ 之前，CEE 预先计算并写入未来 $W$ ms 的参数。
+这样，即使某些 UE/gNB 进程在调度上有轻微抖动，它们也能从共享内存中读取到当前或近未来时隙的参数，而不必等待 CEE 即时计算。
+当某个读者严重落后，写指针即将覆盖其尚未读取的旧槽位时，StarPike 允许覆盖旧数据。
+这是一个有意的取舍：系统优先保持全局墙上时间推进，而不是为了保留某个落后节点的历史状态拖慢所有节点。
+
+\BiSection{PHY-Lite 与 OAI 接口适配}{}
+
+PHY-Lite 的实现重点是将 CEE 提供的链路状态转换为 OAI MAC 及以上层能够消费的事件。
+在原生 OAI 中，MAC 层通过 PHY 回调和 nFAPI 类接口获得上行接收结果、CQI、CRC、HARQ 反馈、随机接入指示和调度相关信息。
+StarPike 保留这些接口形态，但将信息来源从完整 I/Q 波形处理替换为 CEE 参数和统计 PHY 模型。
+
+PHY-Lite 的核心数据路径包括三个步骤。
+第一步是信道质量映射。
+对于当前服务 UE--gNB 对，PHY-Lite 从共享内存读取 $SNR_{ij}(t_k)$，并按照 NR/NTN 中 CQI 上报的含义映射为 CQI 序列。
+MAC 层随后仍然基于 CQI 进行 MCS 和资源分配选择。
+第二步是传输块结果判定。
+PHY-Lite 根据当前 MCS、资源分配和 $SNR_{ij}(t_k)$ 查询或计算对应的 BLER，并用随机采样或阈值判定生成 CRC 成功/失败结果。
+第三步是定时与 NTN 事件注入。
+PHY-Lite 将 $TA_{ij}$、调度偏移 $K_{ij}$、可见性 $v_{ij}$ 和 SIB19 相关字段转化为 MAC/RRC 可见的定时观测、系统信息可达状态和随机接入结果。
+
+这种实现方式保留了 OAI 上层协议的执行路径。
+RRC 建链、NAS 注册、PDU 会话建立、RLC/PDCP 处理和核心网交互仍然由原有代码执行；PHY-Lite 只替换原本由软调制解调器产生的底层观测。
+因此，当链路 SNR 下降、可见性消失或 Timing Advance 不满足要求时，上层仍会通过真实协议流程表现出 RACH 失败、RRC 释放或用户面性能下降。
+
+\BiSubsection{广播与系统信息接收}{}
+
+在 NTN 接入中，UE 需要完成小区搜索、同步、系统消息接收和 NTN 相关参数获取。
+原生全栈实现通常需要通过 PHY 解析同步信号和系统信息波形。
+在 StarPike 中，CEE 已经生成了当前 gNB 的星历、TA、调度偏移、服务窗口和可见性信息，PHY-Lite 因此直接向上层暴露系统信息可用事件。
+对于 UE 而言，它仍然经历系统信息获取流程；区别在于系统信息内容由 CEE 填充，并通过 PHY-Lite 注入，而不是由 UE 独立从波形中恢复。
+
+为了保持 NTN 语义，PHY-Lite 并不会对所有 UE 无条件宣布广播接收成功。
+只有当 CEE 判断 UE 与 gNB 在当前时隙可见，且链路质量满足系统消息接收要求时，PHY-Lite 才向 MAC/RRC 报告系统信息可用。
+如果仰角过低、传播损耗过大或服务窗口结束，UE 将观察到系统信息不可达或测量质量下降，从而触发与真实 NTN 接入相一致的上层行为。
+
+\BiSubsection{随机接入与连接建立}{}
+
+随机接入过程是 PHY-Lite 保真度的关键。
+StarPike 保留 NR/NTN 的随机接入状态机，包括前导发送、RAR 接收、Msg3 发送和竞争解决等步骤。
+不同之处在于，前导检测、RAR 是否成功、Msg3 解码结果等事件由 PHY-Lite 根据 CEE 参数和统计模型生成。
+
+具体而言，UE 发起随机接入前，PHY-Lite 从 CEE 读取当前服务 gNB 的传播时延、Timing Advance、调度偏移和 SNR。
+如果当前可见性为真且链路质量满足门限，则 PHY-Lite 在正确的 MAC 时序上生成前导检测和 RAR 可达事件；否则产生失败或超时。
+Msg3 和后续下行控制消息的成功概率由 SNR--CQI--BLER 模型决定。
+这样，随机接入结果仍然受卫星运动、链路质量和 NTN 定时关系影响，而不再需要完整波形级检测链路。
+
+\BiSubsection{NAS 与用户面传输}{}
+
+一旦 RRC 连接建立成功，后续 NAS 注册、PDU 会话建立和用户面数据转发仍然由 OAI/Open5GS 原有流程执行。
+PHY-Lite 对这些流程的影响主要体现在传输块成功率和时延上。
+当 CEE 输出的 SNR 较高且可见性稳定时，PHY-Lite 将生成较高的解码成功率，用户面吞吐和 RTT 保持稳定。
+当卫星运动导致链路质量下降或服务关系变化时，PHY-Lite 会增加传输块失败、HARQ 重传或 RLC 层重传概率，从而在上层表现为吞吐下降和时延抖动。
+
+这种实现保证了 StarPike 不是简单地在应用层注入流量延迟。
+用户面数据仍然穿过 PDCP、RLC、MAC、GTP-U 和核心网用户面路径，只是底层 PHY 观测由轻量模型生成。
+因此，研究者仍然可以观察协议栈内部的队列积压、重传、会话状态和端到端性能变化。
+
+\BiSection{集中式流量交换实现}{}
+
+CTE 运行在全局控制平面中，与 CEE 共享同一份链路状态。
+它的实现包括三个主要功能：关联选择、广播/测量事件分发和控制/用户面流量转发。
+
+关联选择负责确定每个 UE 当前应当服务于哪个 gNB。
+CTE 周期性读取 CEE 中所有可见 UE--gNB 对的仰角、SNR、服务窗口和历史服务状态，按照配置策略选择服务 gNB。
+最简单的策略是选择当前 SNR 最高或仰角最高的 gNB；更复杂的策略可以加入迟滞门限、最小驻留时间和负载限制，以避免频繁切换。
+无论采用哪种策略，CTE 都将选择结果写入服务状态字段，供 PHY-Lite 和协议栈读取。
+
+广播和测量事件分发用于替代软件容器中的全量广播复制。
+在朴素实现中，每个 gNB 的系统消息可能被发送给所有可见 UE，导致大量无关消息解析。
+在 StarPike 中，CTE 根据当前关联和可见性状态，将系统信息、测量结果和寻呼类事件定向递送给相关 UE。
+UE 侧仍然看到小区搜索、系统信息接收和测量变化；但主机内部的消息路径已经从广播复制变为按需单播。
+
+控制面和用户面转发则负责连接 UE、gNB 和核心网。
+当 UE 与某个 gNB 建立服务关系后，CTE 根据服务表将对应数据转发到正确的 gNB 实例，并将下行数据转发回 UE。
+如果服务关系发生变化，CTE 更新转发表，并配合 PHY-Lite 使 UE/gNB 上层观察到测量变化或连接状态变化。
+这一机制使 StarPike 能够在同一实验中运行大量 UE 和 gNB，而不会因为每个广播事件复制到所有节点而耗尽主机通信资源。
+
+\BiSection{容器化部署与运行流程}{}
+
+StarPike 的实验运行由管理脚本统一编排。
+管理脚本首先读取实验配置，生成 UE、gNB、核心网和 StarPike 全局模块所需的配置文件。
+随后创建容器或进程组，为每个实体分配网络命名空间、IP 地址、日志目录和共享内存访问权限。
+在所有容器启动前，CEE 会先完成初始前瞻窗口的参数预计算，确保协议栈开始运行时能够立即读取到 NTN 状态。
+
+一次完整实验的启动顺序如下。
+首先启动 Open5GS 核心网组件，确保 AMF、SMF 和 UPF 已经就绪。
+其次启动 CEE 和 CTE，使全局星座状态和转发表开始按墙上时间推进。
+然后启动 gNB 实例，加载 PHY-Lite 适配层并连接核心网。
+最后启动 UE 实例，使其通过 PHY-Lite 获取系统信息、执行随机接入、完成 RRC/NAS 建链并建立 PDU 会话。
+实验运行过程中，管理脚本持续收集各容器日志、CEE/CTE 状态、时钟漂移、RACH/RRC 事件、吞吐和 RTT 等指标。
+
+为了便于调试，StarPike 为每个模块保留独立日志。
+CEE 日志记录每个时隙的全局推进状态、前瞻窗口长度和共享内存覆盖情况；
+PHY-Lite 日志记录 CQI、BLER、CRC 结果、随机接入事件和系统信息可达状态；
+CTE 日志记录 UE--gNB 关联变化、切换候选、广播事件递送和用户面转发表；
+OAI/Open5GS 日志则用于验证 RRC、NAS、PDU 会话和核心网行为。
+这些日志共同支撑第六章中的实验评估。
+
+\BiSection{实现取舍与局限}{}
+
+StarPike 的实现做出了明确取舍。
+首先，系统优先保证全局时间轴按墙上时间推进，因此当某个节点严重落后时，共享内存中的旧参数可能被覆盖。
+这会使落后节点出现局部状态不连续，但避免了单个慢节点拖慢整个实验。
+对于大规模 NTN 系统研究而言，全局时钟漂移通常比局部瞬时不一致更具有破坏性，因此这一取舍是合理的。
+
+其次，PHY-Lite 不模拟所有物理层细节。
+它使用 SNR--CQI--BLER 模型生成 MAC 所需观测，能够表达链路质量变化、解码失败和重传趋势，但不能替代硬件测试床研究射频前端、信道估计误差、编码器实现差异或逐符号级干扰。
+因此，StarPike 更适合作为大规模 MAC 及以上层 NTN 协议实验平台，而不是物理层验证平台。
+
+最后，CTE 将广播复制替换为集中递送，这改变的是主机内部消息实现方式，而不是 UE 观察到的协议事件。
+只要 CEE 的可见性、链路质量和服务状态模型准确，UE 仍然会在正确时间看到系统信息、测量变化和连接状态变化。
+后续实验将从时钟漂移、资源开销、信令行为和用户面性能等角度验证这一实现是否达到了设计目标。

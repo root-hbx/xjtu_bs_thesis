@@ -1,142 +1,98 @@
-% !Mode:: "TeX:UTF-8" 
+% !Mode:: "TeX:UTF-8"
 
-\BiChapter{SMT 编码器的设计}{}
+\BiChapter{手机直连卫星网络仿真问题分析}{}
 
-\BiSection{设计目标}{}
+\BiSection{问题定义}{}
 
-需要设计一款 SMT 编码器，能够解析给定的 IAM 策略文件，并将解析后的策略编码为 SMT 表达式。然后，使用 SMT 求解器来检查编码后的 SMT 表达式的相关形式。例如，这个 SMT 编码器要能够回答如下问题：“这个资源能否被某个用户访问？”或者“是否所有用户都可以写入这个资源？”等问题。待检查的性质已经被包含在了策略文件的配置语法中，所以不需要对这些性质做额外的指定或者格式化操作。
+前文已经说明，手机直连卫星网络需要在低轨卫星高速运动、长传播时延和链路质量快速变化的条件下运行 3GPP NTN 协议栈。
+对于实验平台而言，仅能运行单一 UE--gNB 链路并不足以支撑星座级研究；
+真正需要解决的问题是：如何在有限主机资源上同时运行大量 UE、卫星侧 gNB 和核心网组件，并尽可能保持 3GPP NTN 协议流程的实时性和可观测行为。
 
-在配置文件中，包含 wildcard 通配符，如 *、？等。SMT 编码器要能正确地处理包含这些字符的字符串，并准确理解这些字符串所描述的语义。
+本文首先考察一种直接的软件仿真方案。该方案由两部分组成：
+一是轨道状态生成模块，使用公开 TLE 数据和 Skyfield/SGP4 计算低轨卫星位置、速度、传播时延和多普勒频移；
+二是完整蜂窝协议栈模块，使用 OAI NTN 和 Open5GS 分别运行无线接入网和核心网协议\cite{skyfield, celestrak, oai, open5gs}。
+这种组合具有较强的直观性：轨道工具负责提供外部环境，OAI/Open5GS 负责执行真实协议状态机。
+但我们发现：在规模扩大后，该方案会遇到严重的时钟漂移和协议退化问题。
 
-\BiSection{编码方法}{}
+为刻画这一问题，本文区分两种时间：
 
-\BiSubsection{IAM 策略概览}{}
-
-AWS IAM 策略使用 JSON 语言编写，包含若干个字符串 $\to$ 列表/字符串的映射。其格式大体如下：
-\begin{equation}\label{policy_format}
-\begin{aligned}
-    Policy &\to Statement* \\
-    Statement &\to (Effect, Principal, Action, Resource, Condition?) \\
-    Effect &\to allow | deny \\
-    Principal &\to principal : string* \\
-    Action &\to action : string* \\
-    Resource &\to resource : string* \\
-    Condition &\to condition : Operator* \\
-    Operator &\to (OpName, KeyName, Value*) \\
-    OpName &\to StringEquals | StringEqualsIfExists | StringLike | StringNotEquals | \dots \\
-    KeyName &\to aws:sourceVpc | s3:prefix | \dots
-\end{aligned}
+\begin{equation}\label{clock_drift_def}
+\delta(t)=|t_v-t_w|
 \end{equation}
 
-在公式\ref{policy_format}中，$*$ 代表一组元素，$?$ 代表该元素为可选的。更详细地，一个策略 (Policy) 是一系列陈述 (Statement) 的列表。每项陈述都包含一个五元组 $(Effect, Principal, Action, Resource, Condition?)$ 。效用 (Effect) 字段指明本条陈述是肯定性 (allow) 的还是否定性 (deny)的。默认情况下，总是否定对资源的访问，换言之，想要访问一个资源，必须在策略中通过肯定性的陈述显式地授予访问权限。主体 (Principal) 字段用于指明陈述生效的对象，例如用户名，账户 ID 等，通过唯一的字符串来识别。行为 (Action)字段指明陈述生效的，作用于资源上的一系列操作，例如列出可用资源，修改某一个资源等。资源 (Resource) 字段指明陈述生效的一系列资源。可以在行为和资源字段中使用 wildcard 通配符。上述字段是必需的。
+其中，$t_w$ 表示墙上时间，即真实物理世界中线性流逝的时间；$t_v$ 表示虚拟时间，即仿真节点内部协议栈感知到的逻辑时间；$\delta(t)$ 表示二者之间的时钟漂移。
+理想情况下应有 $t_v=t_w$，仿真节点按照真实时间推进。但当主机资源不足时，软调制解调器、信道计算、协议处理和容器通信会共同竞争 CPU 与内存，导致虚拟时间落后于墙上时间。
 
-条件 (Condition) 字段是可选字段，可以在必需字段更加精细地操纵策略行为。条件字段由三元组 $(OpName, KeyName, Value*)$ 组成，其中运算符 (OpName) 指明每个键 (KeyName) 和它的取值 (Value) 之间要满足何种关系。例如，当运算符为 StringEquals 时，则检查键是否与其取值相等；当运算符为 StringLike 时，则检查键是否与其取值对应的正则表达式相匹配。
+在普通网络仿真中，适度时间漂移有时只会影响吞吐或时延统计；但在 NTN 无线接入场景中，时钟漂移会直接影响协议正确性。
+随机接入、Timing Advance (TA)、HARQ、调度偏移、RRC 定时器和 NAS 建链过程都依赖较严格的时间关系。
+如果虚拟节点无法按时执行相应协议操作，仿真结果就不再反映目标 NTN 系统本身，而是混入了主机资源不足造成的伪影。
 
-以下是一个 IAM 策略文件示例：
+\BiSection{朴素 NTN 软件仿真的摸底实验}{}
 
-\begin{lstlisting}[caption={示例 IAM 策略}, label={policy_file_example}]
-- Effect: Allow
-  Principal:
-    AWS: arn:aws:iam:123456:user/1234
-  Action:
-    - s3:listBucket
-    - s3:getObject
-  Resource: arn:aws:s3:::exampleBucket
-- Effect: Deny
-  Principal:
-    AWS: arn:aws:iam:123456:user/1234
-  Action: s3:getObject
-  Resource: arn:aws:s3:::anotherBucket
-  Condition:
-    StringLike:
-      principalArn: arn:aws:iam:123456:arn/1234
-\end{lstlisting}
+本文基于上述朴素组合构建摸底实验环境，并逐步增加并发 UE--gNB 实例数。
+实验的目标不是优化某一具体协议参数，而是观察完整 NTN 软件协议栈在规模扩大时是否仍能保持实时推进。
+每组实验运行 600 秒虚拟时间，记录虚拟时间与墙上时间关系、随机接入和 RRC 失败情况、下行吞吐以及端到端 RTT。
 
-\BiSubsection{SMT 编码策略}{}
+实验结果表明，朴素 OAI NTN 软件仿真在较小规模下尚能运行，但可扩展性很快触及瓶颈。
+当 UE--gNB 实例数增加到 26 时，系统已经接近资源耗尽，时钟漂移随规模呈现明显的非线性增长。
+600 秒虚拟时间在 10 对链路下约需要 750 秒墙上时间，在 13 对链路下则需要超过 1100 秒墙上时间。
+这说明仿真系统已经无法维持实时执行，虚拟协议栈看到的时间进度显著落后于真实时间。
 
-在本小节中，我们将讨论 SMT 编码策略。该策略联合使用字符串，正则表达式等方法来处理 IAM 策略文件中的字段。IAM 策略文件的语法是声明式的，不存在诸如循环、动态数组等编程语言的特性，这使得我们可以较为方便地将其编码为 SMT 格式。一般地，一个 IAM 策略文件能够被等价地编码成所有肯定性的陈述和所有否定性的陈述的合取，而每个肯定性或否定性的陈述进行析取，则可以得到总体的肯定性陈述或否定性陈述：
-\begin{equation}\label{general_encoding}
-\left( \bigvee_{S \in \text{Allow}} [S] \right) \land \neg \left( \bigvee_{S \in \text{Deny}} [S] \right)
-\end{equation}
+随着时钟漂移增加，协议层也开始出现连锁失败。1 到 5 对链路时，RAR 失败和 RRC 释放基本保持在较低水平；
+当规模增加到 13 对链路时，单 UE 的 RAR 失败中位数超过 30，RRC 释放次数也超过 3GPP 随机接入重试阈值所能容忍的范围。这意味着系统不是单纯变慢，而是随机接入和连接维护流程已经开始失效。
 
-在公式\ref{general_encoding}中，$Allow$ 和 $Deny$ 分别代表一个 IAM 策略中肯定性的和否定性的陈述。$[S]$ 代表这个陈述所描述的取值集合。每一个陈述语句都可以分别按照主体，行为，资源和条件语句进行编码。其中，描述主体，行为，资源的总语句可以表示为各自的子语句的析取，而条件的总语句需要表示为所有子语句的合取。最终的表达式为所有部分的合取：
-\begin{equation}\label{statement_encoding}
-\begin{aligned}
-[S] := &\left( \bigvee_{v \in P(S)} p=v \right) \land \left( \bigvee_{v \in A(S)} a=v \right) \land \\
-       &\left( \bigvee_{v \in R(S)} r=v \right) \land \left( \bigwedge_{O \in C(S)} [O] \right)
-\end{aligned}
-\end{equation}
+网络层性能同样受到影响。单链路场景下，下行吞吐能够稳定在约 30 Mbps；扩展到 5 对链路后吞吐下降到约 5 Mbps；在 10 到 13 对链路场景下，吞吐进一步下降到 1 Mbps 以下。
+同时，端到端 RTT 从单链路时约 50 ms 增长到 10 对链路时约 550 ms，并在 13 对链路时超过 1000 ms，且伴随明显抖动。
+表\ref{tab_naive_ntn_observation} 总结了上述关键现象。
 
-在公式\ref{statement_encoding}中，$P(S)$ 表示主体字段中所有可取的字符串值，相应地，$A(S)$ 和 $R(S)$ 分别表示行为字段和资源字段所有可取的字符串值。$C(S)$ 则表示所有按照各自的条件运算符进行运算的键值对的结果。变量 $p, a, r$ 分别代表主体，行为和资源三个验证域。
-
-同理，对于每一条条件语句，都有如下编码策略：
-\begin{equation}\label{condition_encoding}
-[O] := \bigwedge_{\langle op, k, V \rangle \in CO(O)} \left( \text{condExists}_k \land \left( \bigvee_{v \in V} op(k,v) \right) \right)
-\end{equation}
-
-在公式\ref{condition_encoding}中，$CO(O)$ 表示这条条件语句所有可取的值，布尔变量 $\text{condExists}_k$ 用于指示对应的键在实际验证求解的上下文中是否存在，变量 $k$ 代表需要验证的键。条件运算符 $op()$ 被定义为一个函数，作用于条件语句的键值对上，描述了这个键需要满足的某种取值关系。
-
-根据上述的编码公式，我们不难写出示例策略\ref{policy_file_example}对应的 SMT 编码公式：
-\begin{equation}\label{example_policy_encoded}
-\begin{aligned}
-\text{principal} &: \text{aws} = \text{arn:aws:iam:123456:user/1234} \\
-\text{action}_1 &: \text{a} = \text{s3:listBucket} \lor \text{a} = \text{s3:getObject} \\
-\text{action}_2 &: \text{a} = \text{s3:getObject} \\
-\text{resource}_1 &: \text{r} = \text{arn:aws:s3:::exampleBucket} \\
-\text{resource}_2 &: \text{r} = \text{arn:aws:s3:::anotherBucket} \\
-\text{condition} &: \text{StringLike}(\text{principalArn}, \\
-                 &\text{arn:aws:iam:123456:arn/1234}) \\
-\text{S}_1 &: \text{principal} \land \text{action}_1 \land \text{resource}_1 \\
-\text{S}_2 &: \text{principal} \land \text{action}_2 \land \text{resource}_2 \land \text{condition} \\
-\text{S} &: \text{S}_1 \land \lnot \text{S}_2
-\end{aligned}
-\end{equation}
-
-不难注意到，取值主要有两种类型，即字符串常量和正则表达式。对于字符串常量，可以轻易地通过 SMT 等式进行编码，而对于正则表达式匹配问题，前文提到的 SMT 求解器方案中均没有直接的编码方式，因此需要为其单独设计一种编码方式。
-
-\BiSubsection{正则表达式与自动机}{}
-
-\begin{algorithm}[H]
-    \caption{正则表达式构建算法 \label{build_regex_algo}}
-    \IncMargin{2em}
-    \DontPrintSemicolon
-    \KwIn{String $s$}
-    \KwOut{Regular Expression $R$}
-    
-    $\text{parts} \gets \emptyset$ \tcp*{初始化组件列表}
-    $\text{buf} \gets \emptyset$ \tcp*{初始化字符缓冲区}
-    \For{$i = 0 \to |s|-1$}{
-        \If{$s[i] \text{is wildcard}$}{
-            $\text{buf} \gets \text{buf} + s[i]$ \tcp*{处理缓冲字符}
-            \text{handle quantifiers} \tcp*{处理通配符及其量词}
-        }
-        \ElseIf{$s[i] \text{is quantifier}$}{
-            \text{apply quantifier to the last char of buf} \tcp*{特殊字符处理}
-            $\text{buf} \gets \emptyset$ \tcp*{清空缓冲区}
-        }
-        \Else{
-            $\text{buf} \gets \text{buf} + s[i]$ \tcp*{累积普通字符}
-        }
+\begin{table}[H]
+    \renewcommand{\arraystretch}{1.2}
+    \centering\wuhao
+    \caption{朴素 NTN 软件仿真的规模化退化现象} \label{tab_naive_ntn_observation} \vspace{2mm}
+    \begin{tabularx}{\textwidth} {
+        >{\centering\arraybackslash}X
+        >{\centering\arraybackslash}X
+        >{\centering\arraybackslash}X
+        >{\centering\arraybackslash}X
     }
-    \If{$\text{buf} \neq \emptyset$}{
-        $\text{parts} \gets \text{parts} + \text{buf}$ \tcp*{处理末尾字符}
-    }
-    \Return $\text{concat}(\text{parts})$ \tcp*{拼接最终正则表达式}
-\end{algorithm}
+    \toprule[1.5pt]
+        指标 & 小规模场景 & 较大规模场景 & 现象说明 \\
+    \midrule[1pt]
+        时钟漂移 & 1--5 对链路基本可运行 & 13 对链路下 600 s 虚拟时间需超过 1100 s 墙上时间 & 虚拟时间显著落后 \\
+        NTN 信令 & RAR/RRC 失败较少 & 13 对链路下 RAR 失败和 RRC 释放显著增加 & 随机接入流程失效 \\
+        下行吞吐 & 单链路约 30 Mbps & 10--13 对链路低于 1 Mbps & 用户面性能崩溃 \\
+        端到端 RTT & 单链路约 50 ms & 10 对链路约 550 ms，13 对链路超过 1000 ms & 时延和抖动急剧增加 \\
+    \bottomrule[1.5pt]
+    \end{tabularx}
+\end{table}
 
-\begin{figure}[H]
-\centering
-% \includegraphics{regex_breakdown}
-\includegraphics[width=\textwidth]{regex_breakdown.pdf}
-\caption{正则表达式的分解} \label{regex_breakdown}
-\end{figure}
+这些结果表明，朴素软件仿真平台的瓶颈不是简单的吞吐不足，而是会进一步破坏 NTN 协议流程本身。
+对于本文的研究目标而言，这一点尤其关键：如果仿真平台不能保持协议时序，那么后续对随机接入、移动性管理、传输层性能或 O-RAN 功能拆分的观察都可能受到平台失真的影响。
 
-由自动机理论可知，每一个正则表达式都与一个有穷自动机相对应。因此，可以考虑基于 SMT 求解器构建一台和正则表达式对应的确定性有穷自动机来完成对正则表达式的编码。简单而不失一般性地，我们考察包含一个通配符 $.$， 一个克林闭包 $*$ 和普通闭包 $+$ 的正则表达式：
-\begin{equation}\label{regex_example}
-r = \text{ab.cde} \text{.*} \text{fg} \text{.+}
+\BiSection{根因分析}{}
+
+上述现象的根源在于星座级 NTN 仿真需求与传统全栈软件仿真结构之间存在矛盾。
+首先，直连手机 NTN 将传统低轨网络仿真的计算频率显著提高。在传统低轨网络研究中，许多场景只需要秒级更新卫星位置和链路状态，其复杂度近似随卫星数量 $N$ 线性增长。
+而手机直连 NTN 需要在毫秒级维护卫星--UE 链路状态，且每个 gNB 可能服务多个 UE。若有 $N$ 个卫星侧 gNB、每个服务 $M$ 个 UE，则每秒需要处理的状态更新近似为：
+
+\begin{equation}\label{ntn_update_complexity}
+O(1000(NM+N))
 \end{equation}
 
-可以将其拆分为如图\ref{regex_breakdown}中的若干部分。在图\ref{regex_breakdown}中，我们将一个正则表达式拆分为两种不同的类型：静态部分和原子表达式。静态部分代表此项中不含任何正则表达式运算符，可以直接利用字符串相等来进行编码。原子表达式则是最小的，仅包含一个先行元素和一个正则运算符的表达式。在示例表达式\ref{regex_example}中，有三个静态部分：$\text{ab}$，$\text{cde}$ 和 $\text{fg}$，有三个原子表达式 $\text{.}$，$\text{.*}$ 和 $\text{.+}$。
+这里的 $1000$ 来自毫秒级更新时间粒度，$NM$ 对应所有 UE--gNB 接入链路，$N$ 对应卫星或 gNB 本身的状态更新。与传统秒级轨道或网络模拟相比，这一需求会迅速放大主机侧计算压力。
 
-对于原子表达式，可以采用重复模式匹配来进行编码。Z3 提供了方便的关于重复模式匹配的实现。最终算法由算法\ref{build_regex_algo}给出。
+其次，朴素实现存在大量重复星历和链路状态计算。每个 UE--gNB 对都会从相同或相近的轨道轨迹中独立推导传播时延、多普勒频移、TA、可见性和链路质量等状态。
+尽管这些状态都源自同一星座轨迹和用户位置，但在容器化全栈仿真中，它们往往被分散到不同节点内部重复计算。这种重复计算并不会提升协议保真度，却会显著占用 CPU 时间，最终加剧时钟漂移。
 
+第三，完整 PHY 波形处理消耗了大部分主机资源。OAI 这类软调制解调器需要执行 OFDM 调制解调、信道模拟、LDPC 编解码、I/Q 采样处理等复杂计算。
+摸底实验中的 CPU 分析显示，PHY 层约占 75\% 的 CPU 开销，MAC/RLC/PDCP 层约占 18\%，而 RRC 和 NTN 特定任务约占 7\%。
+这说明真正承载 NTN 控制逻辑的 RRC、TA 计算和 SIB19 广播等流程所占计算比例并不高，却会因为底层 PHY 开销过大而无法按时执行。
+
+第四，真实无线系统中的广播语义在软件环境中被直接复刻后，会形成主机侧广播放大。在物理空口中，gNB 广播同步信号和系统消息，多个 UE 可以自然接收同一无线信号；
+但在容器化仿真中，如果每个 gNB 广播都被复制给所有可见 UE，则跨容器通信和无关消息解析会随 UE 和 gNB 数量呈 $O(|UE|\cdot|gNB|)$ 增长。
+该开销同样不会带来额外协议信息，却会进一步压缩协议栈执行时间。
+
+综上，朴素 NTN 软件仿真的失败并非由单一模块导致，而是由重复轨道计算、完整 PHY 开销和广播放大共同造成。
+它们使主机资源过度消耗在低层信号处理和重复状态推导上，导致 MAC 及以上层 NTN 控制流程无法按照真实时间运行。
+后续章节提出的 StarPike 正是针对这三个瓶颈进行重构：通过集中式星历引擎消除重复状态计算，通过 PHY-Lite 降低完整波形处理开销，通过集中式流量交换减少广播复制，
+从而在保持关键协议行为的同时支持更大规模的 NTN 仿真。
