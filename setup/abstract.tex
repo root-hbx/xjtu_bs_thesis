@@ -9,14 +9,23 @@
 
 \defaultfont
 
-本文致力于解决云计算环境中身份与访问管理 (IAM) 策略的复杂性与潜在安全风险问题，通过设计并实现一个基于 SMT（可满足性模理论）的形式化验证系统，旨在提供一种严谨的方法来分析 IAM 策略的有效性与安全性。系统的核心目标是能够准确判断给定的 IAM 策略是否配置正确、权限是否过于宽松或严格，从而帮助用户避免因策略配置不当导致的安全漏洞。为此，本文首先对 IAM 及形式化 IAM 验证的相关技术进行了深入调研，对比了多种IAM求解方式，最终确定采用基于SMT理论的形式化求解作为主要研究方向。这种方法通过将复杂的 IAM 策略语言精确地转换为逻辑表达式，再利用 SMT 求解器的强大推理能力进行自动化分析。
+随着低轨卫星星座和 3GPP 非地面网络（Non-Terrestrial Network， NTN）技术的发展，手机直连卫星网络正在从单链路功能验证走向星座级部署。
+该类网络需要在高速运动、长传播时延、多普勒频移和链路质量快速变化的条件下运行真实蜂窝接入协议。
+现有硬件测试床、商用测试平台、开源移动网络协议栈的简单组合，通常难以扩展到大规模并发场景。
+本文围绕大规模手机直连卫星 NTN 仿真中的实时性与协议保真问题展开研究，提出并实现了 StarPike 仿真系统。
 
-在系统实现层面，本文详细阐述了将 IAM 策略语言编码为 SMT 表达式的具体方案。一个关键的工作在于扩展了 Z3 SMT 求解器，构建了“Z3自动机”，使其能够有效处理 IAM 策略中常见的正则表达式，这是传统 SMT 求解器直接支持不足的方面。此外，本文在 Z3 自动机的基础上，进一步设计并成功复现了亚马逊 AWS 提出的分层抽象 (Stratified Abstraction) 算法，该算法旨在将复杂的策略分析结果以更简洁、易于理解的方式呈现给用户。本文还讨论了此算法存在的问题和潜在的性能改进空间。为了验证所开发系统的正确性和实际性能，本文设计了一套轮询监测的实验流程，用以与 AWS 自身提供的私有 IAM 策略验证服务进行对比测试。
-
-实验结果表明，本文所实现的形式化验证系统在策略分析的正确性上与 AWS 的云验证服务完全一致，证明了系统设计的有效性。在性能方面，尽管本地系统的硬件条件可能不及云服务商的数据中心，但其求解性能变化趋势与 AWS IAM 云服务表现出基本一致的特征，验证了其可行性。最后，本文对未来工作进行了展望，提出了两方面的优化方向：一是算法设计层面，通过引入更精细的分析结果分解机制（如分解为互斥子集）来进一步提升最终输出结果的简明性，避免冗余信息的出现；二是系统实现层面，计划扩展对更多值类型（例如位向量、范围值，以支持IP地址或时间范围等条件的验证）的支持，并探索通过缓存等机制优化高时间复杂度和内存占用的问题，以提升系统的整体性能和适用范围。
+本文首先构建朴素 NTN 软件仿真环境，分析其在规模扩大时的虚拟时间滞后和协议退化现象，
+并指出其根源主要来自重复星历计算、完整物理层波形处理和软件广播复制三类开销。
+针对上述问题，StarPike 采用集中化全局状态、轻量化局部物理层和集中化流量交换的总体设计。
+在实现层面，本文基于 OAI、Open5GS、Skyfield/SGP4 和容器化运行环境完成 StarPike 原型，
+设计了共享内存环形缓冲区、seqlock 同步、轻量化协议栈物理层建模、集中式流量转发表等机制。
+实验设计从时钟漂移、资源开销、NTN 信令行为和用户面性能四个方面评估系统。
+结果表明，StarPike 能够在普通服务器上降低重复计算、物理层处理和广播复制开销，
+在保持 MAC 及以上层协议行为可观测性的同时支撑更大规模的手机直连卫星 NTN 接入实验，
+为后续研究随机接入、移动性管理、O-RAN 功能拆分提供了可扩展的软件仿真基础。
 
 \vspace{\baselineskip}
-\noindent{\textbf{ 关\hspace{0.5em}键\hspace{0.5em}词：}} 网络验证；身份与访问管理；形式化；SMT；分层抽象
+\noindent{\textbf{ 关\hspace{0.5em}键\hspace{0.5em}词：}} 手机直连卫星网络；低轨卫星网络；非地面网络协议仿真
 
 
 %-----------------------------------------------------------------------------------------
@@ -28,15 +37,28 @@
 \titlespacing{\chapter}{0pt}{0mm}{5mm}
 \chapter*{ABSTRACT}
 
-This paper addresses the complexity and security risks of cloud Identity and Access Management (IAM) policies by developing a formal verification system based on Satisfiability Modulo Theories (SMT). The system aims to rigorously analyze IAM policy effectiveness and security, ensuring correct configurations and appropriate permission levels. The SMT-based methodology involves translating IAM policies into logical expressions for automated analysis by SMT solvers.
+As direct-to-cell networks advance toward constellation-scale deployment,
+evaluating 3GPP NTN protocols under extreme mobility, long delays, and rapid link fluctuations becomes critical.
+However, existing testing platforms and open-source projects struggle to scale to large concurrent scenarios.
+To address the challenges of real-time performance and protocol fidelity in large-scale direct-to-cell emulations,
+this paper proposes the StarPike NTN emulator.
 
-Key implementation aspects include encoding IAM policies into SMT expressions and extending the Z3 SMT solver with a Z3 automaton to effectively handle regular expressions, a capability lacking in traditional solvers. Furthermore, Amazon AWS's Stratified Abstraction algorithm was reproduced to present analysis results more concisely, with its limitations and potential improvements also discussed. The system's correctness and performance were validated through comparative testing against AWS's proprietary IAM policy validation service.
+We first identify that baseline software emulations suffer from clock drift and protocol degradation as scale increases,
+primarily due to redundant ephemeris calculations, full physical-layer waveform processing, 
+and software-based broadcast replication.
+StarPike resolves these bottlenecks by adopting a centralized ephemeris engine, a lightweight physical layer, 
+and centralized traffic switching.
+Built upon OpenAirInterface, Open5GS, and Skyfield within a containerized environment, 
+the prototype integrates efficient mechanisms including shared-memory ring buffers, seqlock synchronization, 
+and a centralized forwarding table.
 
-Experimental results demonstrate that the implemented system achieves complete correctness alignment with AWS's validation service in policy analysis. Moreover, its performance trends are largely consistent with the AWS IAM cloud service, affirming the system's feasibility. Future work will focus on two main directions: algorithmically, enhancing result conciseness via finer-grained decomposition mechanisms (e.g., into mutually exclusive subsets); and systemically, expanding support for more value types (such as bit vectors and range values for IP addresses or time conditions) and exploring optimizations like caching to improve overall performance and applicability.
+Evaluations of clock drift, resource utilization, and user-plane performance demonstrate that 
+StarPike significantly reduces computational overhead on standard servers. 
+By supporting large-scale NTN emulation experiments while maintaining protocol fidelity at the MAC layer and above,
+StarPike provides a highly scalable foundation for future research in random access, mobility management, and O-RAN functional splits.
 
 \vspace{\baselineskip}
-\noindent{\textbf{KEY WORDS:}} Network Verification; IAM; Formalization; SMT; Stratified Abstraction
-
+\noindent{\textbf{KEY WORDS:}} Direct-to-Cell Network; Low-Earth Orbit Network; NTN Protocol Emulation
 
 \titlespacing{\chapter}{0pt}{-6mm}{5mm}
 \clearpage{\pagestyle{empty}\cleardoublepage}
