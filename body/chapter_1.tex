@@ -125,8 +125,8 @@ Hypatia、StarPerf、StarryNet、OpenSN等低轨卫星网络仿真平台\cite{hy
     用轻量模拟替代完整波形级 PHY 执行，保留 MAC、RLC、PDCP、RRC、NAS 和核心网流程。
     其核心是根据 CEE 提供的链路状态生成上层所需的 CQI、解码结果、定时观测和随机接入事件，
     从而降低 CPU 开销并保持 MAC 及以上层行为一致性。
-    \item 设计集中式流量交换机制 (Centralized Traffic Exchange, CTE)。
-    CTE 利用 CEE 中已有的全局链路状态，集中完成 UE--gNB 关联、测量和广播流量分发，
+    \item 设计集中式流量交换机制 (Centralized Traffic Switching, CTS)。
+    CTS 利用 CEE 中已有的全局链路状态，集中完成 UE--gNB 关联、测量和广播流量分发，
     将软件仿真中的小区广播复制转换为定向控制和单播转发，避免 $O(|UE|\cdot|gNB|)$ 的跨容器广播放大。
     \item 实现 StarPike 原型系统并进行实验评估。
     本文在容器化实验环境中集成 OAI、Open5GS、Skyfield/SGP4、共享内存环形缓冲区和 PHY-Lite 模型，
