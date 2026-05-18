@@ -15,12 +15,12 @@
 本文围绕大规模手机直连卫星 NTN 仿真中的实时性与协议保真问题展开研究，提出并实现了 StarPike 仿真系统。
 
 本文首先构建朴素 NTN 软件仿真环境，分析其在规模扩大时的虚拟时间滞后和协议退化现象，
-并指出其根源主要来自重复星历计算、完整物理层波形处理和软件广播复制三类开销。
-针对上述问题，StarPike 采用集中化全局状态、轻量化局部物理层和集中化流量交换的总体设计。
+并指出其根源主要来自重复星历计算和完整物理层波形处理两类开销。
+针对上述问题，StarPike 采用集中化全局状态和轻量化局部物理层的总体设计。
 在实现层面，本文基于 OAI、Open5GS、Skyfield/SGP4 和容器化运行环境完成 StarPike 原型，
-设计了共享内存环形缓冲区、seqlock 同步、轻量化协议栈物理层建模、集中式流量转发表等机制。
+设计了共享内存环形缓冲区、seqlock 同步和轻量化协议栈物理层建模等机制。
 实验设计从时钟漂移、资源开销、NTN 信令行为和用户面性能四个方面评估系统。
-结果表明，StarPike 能够在普通服务器上降低重复计算、物理层处理和广播复制开销，
+结果表明，StarPike 能够在普通服务器上降低重复计算和物理层处理开销，
 在保持 MAC 及以上层协议行为可观测性的同时支撑更大规模的手机直连卫星 NTN 接入实验，
 为后续研究随机接入、移动性管理、O-RAN 功能拆分提供了可扩展的软件仿真基础。
 
@@ -45,12 +45,12 @@ this paper proposes the StarPike NTN emulator.
 
 We first identify that baseline software emulations suffer from clock drift and protocol degradation as scale increases,
 primarily due to redundant ephemeris calculations, full physical-layer waveform processing, 
-and software-based broadcast replication.
+and their interaction with real-time protocol execution.
 StarPike resolves these bottlenecks by adopting a centralized ephemeris engine, a lightweight physical layer, 
-and centralized traffic switching.
+and shared state publication.
 Built upon OpenAirInterface, Open5GS, and Skyfield within a containerized environment, 
 the prototype integrates efficient mechanisms including shared-memory ring buffers, seqlock synchronization, 
-and a centralized forwarding table.
+and lightweight PHY modeling.
 
 Evaluations of clock drift, resource utilization, and user-plane performance demonstrate that 
 StarPike significantly reduces computational overhead on standard servers. 
